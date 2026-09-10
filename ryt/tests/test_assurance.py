@@ -122,7 +122,7 @@ class Boundaries(unittest.TestCase):
         with ProviderBridge('TEST-NOT-A-KEY',lambda x:len(x)//4) as bridge:
             payload={'model':'glm-5.3-flash','messages':[],'stream':True,'reasoning_effort':'low','max_tokens':50000}
             record=bridge.validate(payload)
-            self.assertEqual(payload['reasoning_effort'],'max');self.assertEqual(payload['max_tokens'],16384)
+            self.assertEqual(payload['reasoning_effort'],'max');self.assertEqual(payload['max_tokens'],32768)
             bridge.observe(record,b'data: {"choices":[{"finish_reason":"tool_calls"}],"model":"glm-5.3-flash"}')
             self.assertEqual(record['finish_reasons'],['tool_calls'])
             with self.assertRaises(ValueError):bridge.observe(record,b'data: {"choices":[{"finish_reason":"length"}]}')
@@ -271,3 +271,29 @@ class HistoryAndStorage(unittest.TestCase):
                 ReviewBackend(SimpleNamespace(),evidence,[])
             self.assertEqual(evidence['mirrobot_initialization_stage'],'verified_engine')
             self.assertEqual(list(Path(tmp).iterdir()),[])
+
+class ProviderCompletionBoundaries(unittest.TestCase):
+    def test_typed_failure_never_exposes_arbitrary_exception_messages(self):
+        from ryt.diagnostics import BridgeFailure, safe_failure
+        self.assertEqual(safe_failure(ValueError('Authorization: Bearer SECRET')), 'transport_ValueError')
+        self.assertEqual(safe_failure(BridgeFailure('finish_length')), 'finish_length')
+        with self.assertRaises(ValueError): BridgeFailure('PRIVATE UNTRUSTED TEXT')
+
+    def test_terminal_reason_is_recorded_before_length_rejection(self):
+        from ryt.diagnostics import BridgeFailure, safe_failure
+        with ProviderBridge('FAKE-NO-SECRET',len) as bridge:
+            record=bridge.validate({'model':'glm-5.3-flash','messages':[],'stream':True})
+            with self.assertRaises(BridgeFailure) as caught:
+                bridge.observe(record,b'data: {"choices":[{"finish_reason":"length"}],"usage":{"completion_tokens":32768}}')
+            self.assertEqual(safe_failure(caught.exception),'finish_length')
+            self.assertEqual(record['finish_reasons'],['length'])
+            self.assertEqual(record['usage']['completion_tokens'],32768)
+
+    def test_output_and_combined_context_bounds_match_pinned_engine_config(self):
+        from ryt.bridge import OUTPUT_TOKENS, CONTEXT_TOKENS
+        self.assertEqual(agent_config('http://127.0.0.1:1','fake')['provider']['openai']['models']['glm-5.3-flash']['limit']['output'],OUTPUT_TOKENS)
+        with ProviderBridge('FAKE',lambda _:CONTEXT_TOKENS-OUTPUT_TOKENS-1023) as bridge:
+            with self.assertRaises(ValueError): bridge.validate({'model':'glm-5.3-flash','messages':[],'stream':True})
+        for limit in [True,0,-1,'32768']:
+            with ProviderBridge('FAKE',len) as bridge,self.assertRaises(ValueError):
+                bridge.validate({'model':'glm-5.3-flash','messages':[],'stream':True,'max_completion_tokens':limit})

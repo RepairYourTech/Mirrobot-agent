@@ -7,8 +7,13 @@ import threading
 import urllib.error
 import urllib.request
 from ryt.common import load_json, sha256, write_json
+from ryt.diagnostics import BridgeFailure, safe_failure
+from pathlib import Path
 
 ENDPOINT = 'https://api.z.ai/api/coding/paas/v4/chat/completions'
+LIMITS = load_json((Path(__file__).with_name('locks.json')).read_text())
+OUTPUT_TOKENS = LIMITS['output_tokens']
+CONTEXT_TOKENS = LIMITS['context_tokens']
 
 
 class ProviderBridge:
@@ -38,7 +43,7 @@ class ProviderBridge:
                 try:
                     length = int(self.headers.get('Content-Length', '0'))
                     if not 0 < length <= 4 * 1024 * 1024:
-                        raise ValueError('request size invalid')
+                        raise BridgeFailure('request_size')
                     payload = load_json(self.rfile.read(length))
                     record = bridge.validate(payload)
                     request = urllib.request.Request(ENDPOINT, data=json.dumps(payload).encode(),
@@ -52,15 +57,15 @@ class ProviderBridge:
                         for line in response:
                             size += len(line)
                             if size > 16 * 1024 * 1024:
-                                raise ValueError('provider response exceeds budget')
+                                raise BridgeFailure('response_size')
                             bridge.observe(record, line)
                             self.wfile.write(line)
                             self.wfile.flush()
                         if not record['finish_reasons']:
-                            raise ValueError('provider stream has no completed choice')
+                            raise BridgeFailure('missing_terminal')
                 except Exception as error:
+                    bridge.error = safe_failure(error)
                     bridge.failed.set()
-                    bridge.error = ('HTTP_' + str(error.code)) if isinstance(error, urllib.error.HTTPError) else type(error).__name__
                     try:
                         self.send_error(502, 'provider request failed; no retry or fallback')
                     except OSError:
@@ -130,24 +135,25 @@ class ProviderBridge:
             raise ValueError('wrong model or messages')
         if payload.get('stream') is not True:
             raise ValueError('streaming required for completion evidence')
-        if not isinstance(payload.get('max_tokens', 16384), int) or isinstance(payload.get('max_tokens'), bool):
-            raise ValueError('invalid output limit')
+        requested = payload.pop('max_completion_tokens', payload.get('max_tokens', OUTPUT_TOKENS))
+        if type(requested) is not int or requested < 1:
+            raise BridgeFailure('output_limit')
         payload['reasoning_effort'] = 'max'
-        payload['max_tokens'] = min(payload.pop('max_completion_tokens', payload.get('max_tokens', 16384)), 16384)
+        payload['max_tokens'] = min(requested, OUTPUT_TOKENS)
         payload['stream_options'] = {'include_usage': True}
         # Bound context without secretly clipping/compacting the model's inputs.
         tokens = self.count_tokens(json.dumps(payload))
-        if tokens > 131072 - 16384 - 1024:
-            raise ValueError('context budget exhausted; input will not be clipped')
+        if tokens > CONTEXT_TOKENS - OUTPUT_TOKENS - 1024:
+            raise BridgeFailure('context_limit')
         prefilled = self.prefill_receipts(payload['messages'])
         with self.lock:
             if prefilled and self.receipt_path is not None:
                 write_json(self.receipt_path, prefilled)
             if len(self.records) >= 64:
-                raise ValueError('model-call bound reached')
+                raise BridgeFailure('call_limit')
             record = {'model': payload['model'], 'reasoning_effort': payload['reasoning_effort'],
                       'request_sha256': sha256(json.dumps(payload, sort_keys=True)),
-                      'estimated_input_tokens': tokens, 'finish_reasons': [], 'usage': {}, 'reported_models': [],
+                      'estimated_input_tokens': tokens, 'max_output_tokens': payload['max_tokens'], 'finish_reasons': [], 'usage': {}, 'reported_models': [],
                       'tool_results_sha256': self.receipts(payload['messages']), 'prefilled_files': prefilled}
             self.records.append(record)
         return record
@@ -158,12 +164,17 @@ class ProviderBridge:
         text = line[5:].strip()
         if text == b'[DONE]':
             return
-        data = load_json(text)
+        try:
+            data = load_json(text)
+        except (ValueError, TypeError):
+            raise BridgeFailure('stream_json') from None
+        if not isinstance(data, dict):
+            raise BridgeFailure('stream_json')
         if data.get('error'):
-            raise ValueError('provider stream error')
+            raise BridgeFailure('stream_error')
         model = data.get('model')
         if model and model.lower() != 'glm-5.3-flash':
-            raise ValueError('provider reported a different model')
+            raise BridgeFailure('reported_model')
         if model and model not in record['reported_models']:
             record['reported_models'].append(model)
         if data.get('usage'):
@@ -173,7 +184,8 @@ class ProviderBridge:
             if reason:
                 record['finish_reasons'].append(reason)
                 if reason not in ('stop', 'tool_calls'):
-                    raise ValueError('unfinished provider response')
+                    raise BridgeFailure('finish_length' if reason == 'length' else
+                                        'finish_filter' if reason == 'content_filter' else 'finish_other')
 
     def __enter__(self):
         self.thread.start()

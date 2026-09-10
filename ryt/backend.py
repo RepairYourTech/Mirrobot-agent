@@ -81,7 +81,7 @@ def agent_config(url, token):
         'provider': {'openai': {'npm': '@ai-sdk/openai-compatible', 'name': 'RYT fixed Z.AI bridge',
             'options': {'baseURL': url, 'apiKey': token, 'timeout': 600000, 'maxRetries': 0},
             'models': {'glm-5.3-flash': {'name': 'GLM-5.3-Flash', 'tool_call': True,
-                'limit': {'context': 131072, 'output': 16384},
+                'limit': {'context': LOCK['context_tokens'], 'output': LOCK['output_tokens']},
                 'options': {'reasoningEffort': 'max'}}}}},
         'permission': {'*': 'deny', 'ryt_*': 'allow'},
         'agent': {'ryt-review': {'mode': 'primary', 'description': 'Read-only adversarial reviewer',
@@ -211,6 +211,15 @@ def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_pol
                 if process.returncode != 0 or bridge.failed.is_set():
                     raise ValueError('OpenCode process/provider failed: ' + getattr(bridge, 'error', str(process.returncode)))
             finally:
+                # Capture the final terminal metadata, not merely the last 30s
+                # heartbeat. No raw prompt, reply, credential or stderr is copied.
+                events_path = output / 'tools.json'
+                tool_events = load_json(read_text(events_path)) if events_path.exists() else []
+                write_json(session_root / 'progress.json', {
+                    'elapsed_seconds': round(time.monotonic()-started, 1),
+                    'provider_requests': bridge.records, 'tool_events': tool_events,
+                    'failure_code': getattr(bridge, 'error', None),
+                })
                 if process.poll() is None:
                     os.killpg(process.pid, signal.SIGTERM)
                     try:

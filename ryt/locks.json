@@ -5,7 +5,7 @@
   "endpoint": "https://api.z.ai/api/coding/paas/v4/chat/completions",
   "reasoning_effort": "max",
   "context_tokens": 131072,
-  "output_tokens": 16384,
+  "output_tokens": 32768,
   "request_timeout_seconds": 600,
   "session_timeout_seconds": 1800,
   "max_model_calls": 64,
