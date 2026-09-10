@@ -6,7 +6,8 @@ from ryt.common import confined, load_json, read_text, sha256, write_json
 from ryt.probe import run_probe
 
 PAGE_LINES = 240
-PAGE_BYTES = 48000
+PAGE_BYTES = 24000
+OUTPUT_BYTES = 32768
 
 
 def integer(value, minimum=0, maximum=10000000):
@@ -23,6 +24,8 @@ I = {'type': 'integer', 'minimum': 0}
 TOOLS = [
  {'name': 'review_context', 'description': 'Get mandatory changed-file list, prior bot findings and untrusted PR context.',
   'inputSchema': schema({})},
+ {'name': 'read_context', 'description': 'Read paginated PR description, linked requirements, trusted repo guidance or prior findings as data. Follow next_offset for the complete section.',
+  'inputSchema': schema({'section': S, 'offset': I}, ['section'])},
  {'name': 'read_diff', 'description': 'Read a complete page of the exact diff for one file; every page of every changed file is required before submitting.',
   'inputSchema': schema({'path': S, 'offset': I}, ['path'])},
  {'name': 'list_files', 'description': 'Browse the immutable head repository snapshot; follow pagination.',
@@ -44,7 +47,7 @@ class RepositoryTools:
         self.data = Path(data)
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=True)
-        self.context = load_json(read_text(self.data / 'context.json'))
+        self.context = load_json(read_text(self.data / 'context.json', 4 * 1024 * 1024))
         self.diffs = load_json(read_text(self.data / 'diffs.json', 16 * 1024 * 1024))
         self.coverage = {name: set() for name in self.diffs}
         self.events = []
@@ -56,7 +59,7 @@ class RepositoryTools:
         integer(offset, maximum=len(lines))
         selected, size = [], 0
         for line in lines[offset:offset + PAGE_LINES]:
-            size += len(line.encode())
+            size += len(json.dumps(line, ensure_ascii=False).encode())
             if size > PAGE_BYTES:
                 if not selected:
                     raise ValueError('single line exceeds inspection budget')
@@ -77,13 +80,22 @@ class RepositoryTools:
         if self.submitted:
             raise ValueError('review already finalized')
         if name == 'review_context':
-            return {key: value for key, value in self.context.items() if key != 'snapshot_files'}
+            keys = ('head', 'base', 'required_files', 'review_type', 'history_limited', 'snapshot_unavailable')
+            result = {key: self.context[key] for key in keys if key in self.context}
+            result['context_sections'] = list(self.context.get('sections', {}))
+            return result
+        if name == 'read_context':
+            section = args['section']
+            if section not in self.context.get('sections', {}):
+                raise ValueError('unknown context section')
+            value = self.context['sections'][section]
+            text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2)
+            return {'section': section, **self.page(text, args.get('offset', 0))}
         if name == 'read_diff':
             path = args['path']; offset = args.get('offset', 0)
             if path not in self.diffs:
                 raise ValueError('file is not in this required diff chunk')
             page = self.page(self.diffs[path], offset)
-            self.coverage[path].update(range(page['offset'], page['end']))
             return {'path': path, **page}
         if name == 'list_files':
             paths = self.available(args.get('prefix', ''))
@@ -108,7 +120,7 @@ class RepositoryTools:
                     continue
                 for line, content in enumerate(text.splitlines(), 1):
                     if query in content:
-                        matches.append({'path': path, 'line': line, 'excerpt': content[:1000]})
+                        matches.append({'path': path, 'line': line, 'excerpt': content[:300]})
                         if len(matches) >= 5000:
                             break
                 if len(matches) >= 5000:
@@ -129,6 +141,15 @@ class RepositoryTools:
     def submit(self, args):
         if self.fatal:
             raise ValueError('a fatal inspection/probe failure prevents completion')
+        prefill_path = self.output / 'prefill.json'
+        if prefill_path.exists():
+            receipts = load_json(read_text(prefill_path))
+            for path, text in self.diffs.items():
+                receipt = receipts.get(path)
+                if receipt is not None:
+                    if receipt != {'sha256': sha256(text), 'lines': len(text.splitlines())}:
+                        raise ValueError('trusted input receipt mismatch')
+                    self.coverage[path].update(range(receipt['lines']))
         missing = {p: len(t.splitlines())-len(self.coverage[p]) for p, t in self.diffs.items()
                    if len(t.splitlines()) != len(self.coverage[p])}
         if missing:
@@ -170,6 +191,10 @@ class RepositoryTools:
         self.events.append(event)
         try:
             result = self.execute(name, args)
+            if len(json.dumps(result, ensure_ascii=False).encode()) > OUTPUT_BYTES:
+                raise ValueError('tool output exceeds transport budget; narrow the request')
+            if name == 'read_diff':
+                self.coverage[args['path']].update(range(result['offset'], result['end']))
             event.update(status='success', output_sha256=sha256(json.dumps(result, sort_keys=True)),
                          offset=result.get('offset'), end=result.get('end'))
             return result
@@ -205,7 +230,7 @@ def main():
                 params = request['params']
                 try:
                     value = tools.call(params['name'], params.get('arguments', {}))
-                    result = {'content': [{'type': 'text', 'text': json.dumps(value)}]}
+                    result = {'content': [{'type': 'text', 'text': json.dumps(value, ensure_ascii=False)}]}
                 except (KeyError, ValueError, OSError) as error:
                     result = {'isError': True, 'content': [{'type': 'text', 'text': str(error)[:800]}]}
             else:

@@ -41,7 +41,7 @@ reviewing model. GLM-5.3-Flash remains the only inference model with maximum rea
 - [ ] Missing coverage, malformed final result, model/tool failure and stale publication fail closed.
 - [x] Upstream prompt fixtures plus RYT unit/integration tests.
 - [ ] Same-model defective/fixed/cross-file canaries; record catches, false positives,
-      actual tool reads, input/output usage and elapsed time. Do not claim superiority
+      actual input receipts and tool reads, input/output usage and elapsed time. Do not claim superiority
       from architecture or a small smoke sample; retain the broader calibration gap.
 - [ ] Premerge canary on the actual dedicated lane with immutable candidate bytes.
 - [ ] Required CI and review disposition, then squash integration PR normally.

@@ -6,7 +6,7 @@ import secrets
 import threading
 import urllib.error
 import urllib.request
-from ryt.common import load_json, sha256
+from ryt.common import load_json, sha256, write_json
 
 ENDPOINT = 'https://api.z.ai/api/coding/paas/v4/chat/completions'
 
@@ -19,6 +19,9 @@ class ProviderBridge:
         self.token = secrets.token_hex(32)
         self.count_tokens = count_tokens
         self.records = []
+        self.prefill = None
+        self.prefill_nonce = secrets.token_hex(16)
+        self.receipt_path = None
         self.failed = threading.Event()
         self.lock = threading.Lock()
         bridge = self
@@ -67,6 +70,61 @@ class ProviderBridge:
         self.server.daemon_threads = True
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
+    @staticmethod
+    def receipts(messages):
+        receipts = set()
+        for message in messages:
+            if message.get('role') != 'tool':
+                continue
+            content = message.get('content', '')
+            if isinstance(content, str):
+                content = [content]
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                text = part.get('text', '') if isinstance(part, dict) else part
+                if not isinstance(text, str):
+                    continue
+                try:
+                    data = load_json(text)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(data, dict) and {'path', 'text', 'sha256', 'offset', 'end'} <= data.keys():
+                    receipts.add(sha256(json.dumps(data, sort_keys=True)))
+        return sorted(receipts)
+
+    def input_packet(self, packet, receipt_path):
+        self.prefill = packet
+        self.receipt_path = receipt_path
+        return ('RYT_REVIEW_PACKET_BEGIN_' + self.prefill_nonce + '\n' +
+                json.dumps(packet, ensure_ascii=False) + '\nRYT_REVIEW_PACKET_END_' + self.prefill_nonce)
+
+    def prefill_receipts(self, messages):
+        if self.prefill is None:
+            return {}
+        begin = 'RYT_REVIEW_PACKET_BEGIN_' + self.prefill_nonce + '\n'
+        end = '\nRYT_REVIEW_PACKET_END_' + self.prefill_nonce
+        for message in messages:
+            if message.get('role') != 'user':
+                continue
+            content = message.get('content', '')
+            parts = [content] if isinstance(content, str) else content
+            if not isinstance(parts, list):
+                continue
+            for part in parts:
+                text = part.get('text', '') if isinstance(part, dict) else part
+                if not isinstance(text, str) or begin not in text:
+                    continue
+                raw = text.split(begin, 1)[1]
+                if end not in raw:
+                    raise ValueError('initial input packet truncated')
+                actual = load_json(raw.split(end, 1)[0])
+                if actual != self.prefill:
+                    raise ValueError('initial input packet modified')
+                return {path: {'sha256': sha256(diff), 'lines': len(diff.splitlines())}
+                        for path, diff in actual['diffs'].items()}
+        raise ValueError('complete initial input packet missing from provider request')
+
     def validate(self, payload):
         if payload.get('model') != 'glm-5.3-flash' or not isinstance(payload.get('messages'), list):
             raise ValueError('wrong model or messages')
@@ -81,12 +139,16 @@ class ProviderBridge:
         tokens = self.count_tokens(json.dumps(payload))
         if tokens > 131072 - 16384 - 1024:
             raise ValueError('context budget exhausted; input will not be clipped')
+        prefilled = self.prefill_receipts(payload['messages'])
         with self.lock:
+            if prefilled and self.receipt_path is not None:
+                write_json(self.receipt_path, prefilled)
             if len(self.records) >= 64:
                 raise ValueError('model-call bound reached')
             record = {'model': payload['model'], 'reasoning_effort': payload['reasoning_effort'],
                       'request_sha256': sha256(json.dumps(payload, sort_keys=True)),
-                      'estimated_input_tokens': tokens, 'finish_reasons': [], 'usage': {}, 'reported_models': []}
+                      'estimated_input_tokens': tokens, 'finish_reasons': [], 'usage': {}, 'reported_models': [],
+                      'tool_results_sha256': self.receipts(payload['messages']), 'prefilled_files': prefilled}
             self.records.append(record)
         return record
 

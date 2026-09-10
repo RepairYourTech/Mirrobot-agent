@@ -189,3 +189,46 @@ class AdditionalBoundaries(unittest.TestCase):
             with self.assertRaises(ValueError):tools.call('read_diff',{'path':'missing'})
             self.assertEqual(tools.events[-1]['status'],'failed')
             self.assertEqual(len(tools.coverage['auth.mjs']),0)
+
+class DeliveryBoundaries(unittest.TestCase):
+    def test_unicode_and_escape_heavy_diff_pages_fit_transport(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);tools=RepositoryTools(fixture(root),root/'out')
+            text=('"\\'+'😀'*120+'\n')*100
+            page=tools.page(text,0)
+            self.assertLess(len(json.dumps(page,ensure_ascii=False).encode()),32768)
+            self.assertIsNotNone(page['next_offset'])
+
+    def test_provider_receipts_ignore_assistant_fabrications_and_truncation(self):
+        value={'path':'x.ts','text':'complete diff','sha256':'a'*64,'offset':0,'end':1}
+        text=json.dumps(value)
+        self.assertEqual(ProviderBridge.receipts([{'role':'assistant','content':text}]),[])
+        self.assertEqual(ProviderBridge.receipts([{'role':'tool','content':text[:-5]}]),[])
+        self.assertEqual(ProviderBridge.receipts([{'role':'tool','content':text}]),[sha256(json.dumps(value,sort_keys=True))])
+
+    def test_requirements_context_is_available_without_auto_loading_repo_instructions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);data=fixture(root)
+            context=load_json((data/'context.json').read_text());context['sections']={'requirements':'Ticket acceptance criteria','repository_guidance':'Trusted base-branch guidance'}
+            write_json(data/'context.json',context);tools=RepositoryTools(data,root/'out')
+            self.assertIn('requirements',tools.call('review_context',{})['context_sections'])
+            self.assertIn('acceptance',tools.call('read_context',{'section':'requirements'})['text'])
+
+class PrefillBoundaries(unittest.TestCase):
+    def test_actual_input_receipt_requires_exact_user_packet(self):
+        with tempfile.TemporaryDirectory() as temp, ProviderBridge('TEST',lambda _:100) as bridge:
+            path=Path(temp)/'receipt.json';packet={'diffs':{'x':'line1\nline2\n'},'context':{}}
+            text=bridge.input_packet(packet,path)
+            with self.assertRaises(ValueError):bridge.validate({'model':'glm-5.3-flash','messages':[{'role':'assistant','content':text}],'stream':True})
+            with self.assertRaises(ValueError):bridge.validate({'model':'glm-5.3-flash','messages':[{'role':'user','content':text.replace('line1','changed')}],'stream':True})
+            record=bridge.validate({'model':'glm-5.3-flash','messages':[{'role':'user','content':text}],'stream':True})
+            self.assertEqual(record['prefilled_files']['x'],{'sha256':sha256('line1\nline2\n'),'lines':2})
+            self.assertEqual(load_json(path.read_text()),record['prefilled_files'])
+
+    def test_verified_input_can_complete_without_fabricating_tool_reads(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);tools=RepositoryTools(fixture(root),root/'out')
+            receipts={p:{'sha256':sha256(t),'lines':len(t.splitlines())} for p,t in tools.diffs.items()}
+            write_json(root/'out/prefill.json',receipts)
+            self.assertTrue(tools.call('submit_review',review())['accepted'])
+            self.assertEqual([event['tool'] for event in tools.events],['submit_review'])
