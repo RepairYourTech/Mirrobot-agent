@@ -13,6 +13,7 @@ import urllib.parse
 import urllib.request
 
 from ryt.bridge import ProviderBridge
+from ryt.history import review_history
 from ryt.common import load_json, read_text, sha256, write_json
 from ryt.probe import base_sandbox
 from ryt.snapshot import extract_snapshot, MAX_ARCHIVE
@@ -251,18 +252,29 @@ class ReviewBackend:
     def __init__(self, reviewer, evidence, chunks):
         self.reviewer = reviewer; self.evidence = evidence
         self.deadline = time.monotonic() + LOCK['review_timeout_seconds']
-        self.temporary = tempfile.TemporaryDirectory(prefix='ryt-mirrobot-')
+        # Snapshot files belong in the dedicated runner job directory, not the
+        # shared /tmp tmpfs whose inode pool can be exhausted by unrelated jobs.
+        self.temporary = tempfile.TemporaryDirectory(prefix='ryt-mirrobot-', dir=os.environ.get('RUNNER_TEMP'))
         self.root = Path(self.temporary.name)
+        self.chunks = chunks
+        try:
+            self.initialize()
+        except BaseException:
+            self.temporary.cleanup()
+            raise
+
+    def initialize(self):
+        self.evidence['mirrobot_initialization_stage'] = 'verified_engine'
         self.binary = install_opencode(self.root)
         self.data = self.root / 'data'; self.data.mkdir()
-        self.chunks = chunks
         self.token = os.environ.get('GITHUB_TOKEN', '')
-        repo = evidence['repository']
+        repo = self.evidence['repository']
         if not re.fullmatch(r'[\w.-]+/[\w.-]+', repo):
             raise ValueError('invalid repository identity')
         inventories = {}
         for revision in ('head', 'base'):
-            sha = evidence[revision]
+            self.evidence['mirrobot_initialization_stage'] = 'snapshot_' + revision
+            sha = self.evidence[revision]
             if not re.fullmatch('[a-f0-9]{40}', sha):
                 raise ValueError('invalid snapshot revision')
             data = download(f'https://api.github.com/repos/{repo}/tarball/{sha}', MAX_ARCHIVE, self.token)
@@ -273,33 +285,23 @@ class ReviewBackend:
             reviewThreads(last:100) { pageInfo { hasPreviousPage } nodes {
               isResolved isOutdated path line comments(last:20) {
                 pageInfo { hasPreviousPage } nodes { body isMinimized
-                  author { login } originalCommit { oid } } }
+                  author { __typename login ... on Bot { databaseId } } originalCommit { oid } } }
             } }
           } }
         }"""
+        self.evidence['mirrobot_initialization_stage'] = 'verified_review_history'
         owner, name = repo.split('/')
         request = urllib.request.Request('https://api.github.com/graphql',
             data=json.dumps({'query': query, 'variables': {'owner': owner, 'name': name,
-                            'number': reviewer.git_provider.pr.number}}).encode(),
+                            'number': self.reviewer.git_provider.pr.number}}).encode(),
             headers={'Authorization': 'Bearer ' + self.token, 'Content-Type': 'application/json'})
         with urllib.request.urlopen(request, timeout=30) as response:
             history = load_json(response.read(2 * 1024 * 1024 + 1))
         if history.get('errors'):
             raise ValueError('review history metadata unavailable')
         threads = history['data']['repository']['pullRequest']['reviewThreads']
-        self.history_limited = threads['pageInfo']['hasPreviousPage']
-        self.histories = []
-        for thread in threads['nodes']:
-            self.history_limited |= thread['comments']['pageInfo']['hasPreviousPage']
-            for comment in thread['comments']['nodes']:
-                if (comment.get('author') or {}).get('login') != 'github-actions[bot]' or comment['isMinimized']:
-                    continue
-                self.histories.append({'path': thread['path'], 'line': thread['line'],
-                    'resolved': thread['isResolved'], 'outdated': thread['isOutdated'],
-                    'commit': (comment.get('originalCommit') or {}).get('oid'), 'body': comment['body'][:8000]})
-                self.history_limited |= len(comment['body']) > 8000
-        self.history_limited |= len(self.histories) > 100
-        self.histories = self.histories[-100:]
+        self.histories, self.history_limited = review_history(threads)
+        self.evidence['mirrobot_initialization_stage'] = 'complete'
         self.evidence['reasoning_backend'] = 'mirrobot-opencode'
         self.evidence['mirrobot_sessions'] = []
 

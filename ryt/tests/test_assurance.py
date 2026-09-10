@@ -241,3 +241,33 @@ class ExecutionBudget(unittest.TestCase):
         self.assertEqual(session_budget(1900,3,1000),300)
         with self.assertRaises(ValueError):session_budget(1010,1,1000)
         with self.assertRaises(ValueError):session_budget(5800,0,1000)
+
+
+class HistoryAndStorage(unittest.TestCase):
+    def test_graphql_actions_bot_history_uses_id_not_login_text(self):
+        from ryt.history import review_history
+        def comment(author, hidden=False):
+            return {'author':author,'isMinimized':hidden,'body':'Prior defect evidence',
+                    'originalCommit':{'oid':'a'*40}}
+        bot={'__typename':'Bot','databaseId':41898282,'login':'github-actions'}
+        comments=[comment(bot),comment({**bot,'login':'github-actions[bot]'}),
+                  comment({**bot,'databaseId':999}),comment({**bot,'__typename':'User'}),
+                  comment(bot,True),comment(None)]
+        thread={'path':'a.ts','line':None,'isResolved':True,'isOutdated':True,
+                'comments':{'nodes':comments,'pageInfo':{'hasPreviousPage':False}}}
+        records,limited=review_history({'nodes':[thread],'pageInfo':{'hasPreviousPage':False}})
+        self.assertEqual(len(records),2);self.assertFalse(limited)
+        self.assertTrue(all(r['outdated'] and r['resolved'] for r in records))
+
+    def test_backend_snapshots_use_job_directory_not_shared_tmp(self):
+        from types import SimpleNamespace
+        from ryt.backend import ReviewBackend
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ,{'RUNNER_TEMP':tmp}):
+            def stop(folder):
+                self.assertEqual(folder.parent,Path(tmp))
+                raise RuntimeError('stop before any network')
+            evidence={'repository':'owner/repo'}
+            with patch('ryt.backend.install_opencode',side_effect=stop), self.assertRaisesRegex(RuntimeError,'stop'):
+                ReviewBackend(SimpleNamespace(),evidence,[])
+            self.assertEqual(evidence['mirrobot_initialization_stage'],'verified_engine')
+            self.assertEqual(list(Path(tmp).iterdir()),[])
