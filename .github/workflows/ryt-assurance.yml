@@ -16,7 +16,18 @@ jobs:
         with:
           persist-credentials: false
       - name: Install isolated-test prerequisites on the ephemeral runner
-        run: sudo apt-get update -qq && sudo apt-get install -y bubblewrap
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bubblewrap apparmor-profiles
+          # Ubuntu 24.04 requires a per-binary userns allowance. Keep the global
+          # restriction enabled; never disable AppArmor or run the tests as root.
+          if [ -f /usr/share/apparmor/extra-profiles/bwrap-userns-restrict ]; then
+            sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/bwrap-userns-restrict
+            sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+          else
+            printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' '/usr/bin/bwrap flags=(default_allow) {' '  userns,' '}' | sudo tee /etc/apparmor.d/ryt-bwrap-ci >/dev/null
+            sudo apparmor_parser -r /etc/apparmor.d/ryt-bwrap-ci
+          fi
       - name: Fetch and verify pinned OpenCode
         run: |
           python3 - <<'PY'
