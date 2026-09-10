@@ -18,7 +18,7 @@ jobs:
       - name: Install isolated-test prerequisites on the ephemeral runner
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y bubblewrap apparmor-profiles
+          sudo apt-get install -y bubblewrap apparmor-profiles nodejs
           # Ubuntu 24.04 requires a per-binary userns allowance. Keep the global
           # restriction enabled; never disable AppArmor or run the tests as root.
           if [ -f /usr/share/apparmor/extra-profiles/bwrap-userns-restrict ]; then
