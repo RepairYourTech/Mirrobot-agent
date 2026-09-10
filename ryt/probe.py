@@ -48,8 +48,11 @@ def run_probe(language, code, snapshot):
             resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
             resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         out = root / 'stdout'; err = root / 'stderr'
-        seccomp = os.memfd_create('ryt-probe-filter', 0)
-        os.write(seccomp, process_filter(language)); os.lseek(seccomp, 0, 0)
+        # Anonymous temporary descriptors work even when a pinned Python build
+        # omits os.memfd_create; the exact same BPF bytes are still mandatory.
+        filter_file = tempfile.TemporaryFile()
+        filter_file.write(process_filter(language)); filter_file.seek(0)
+        seccomp = filter_file.fileno()
         command[1:1] = ['--seccomp', str(seccomp)]
         with out.open('wb') as stdout, err.open('wb') as stderr:
             try:
@@ -59,7 +62,7 @@ def run_probe(language, code, snapshot):
             except subprocess.TimeoutExpired:
                 status = 'timeout'
             finally:
-                os.close(seccomp)
+                filter_file.close()
         return {'exit_code': status, 'stdout': out.read_bytes()[:64000].decode(errors='replace'),
                 'stderr': err.read_bytes()[:64000].decode(errors='replace'),
                 'scope': 'isolated scratch probe; no dependency install or production services'}

@@ -57,7 +57,7 @@ class ProviderBridge:
                             raise ValueError('provider stream has no completed choice')
                 except Exception as error:
                     bridge.failed.set()
-                    bridge.error = type(error).__name__
+                    bridge.error = ('HTTP_' + str(error.code)) if isinstance(error, urllib.error.HTTPError) else type(error).__name__
                     try:
                         self.send_error(502, 'provider request failed; no retry or fallback')
                     except OSError:

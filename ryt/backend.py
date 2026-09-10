@@ -168,10 +168,10 @@ def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_pol
                 while process.poll() is None:
                     if (bridge.failed.is_set() or time.monotonic()-started > 850 or
                             stdout_path.stat().st_size > 16*1024*1024 or stderr_path.stat().st_size > 2*1024*1024):
-                        raise ValueError('provider/session failure or execution budget exceeded')
+                        raise ValueError('provider/session failure: ' + getattr(bridge, 'error', 'execution budget exceeded'))
                     time.sleep(0.5)
                 if process.returncode != 0 or bridge.failed.is_set():
-                    raise ValueError('OpenCode process or provider failed')
+                    raise ValueError('OpenCode process/provider failed: ' + getattr(bridge, 'error', str(process.returncode)))
             finally:
                 if process.poll() is None:
                     os.killpg(process.pid, signal.SIGTERM)
@@ -263,9 +263,17 @@ class ReviewBackend:
             'prior_findings_untrusted': self.histories, 'prior_findings_limit': 100,
             'history_limited': self.history_limited,
             'pr_title_untrusted': pr.title, 'pr_body_untrusted': (pr.body or '')[:12000]})
-        result, telemetry = await asyncio.to_thread(execute_agent, self.binary, self.data, session,
-            os.environ.get('OPENAI_KEY', ''), self.reviewer.token_handler.count_tokens,
-            self.reviewer.vars.get('extra_instructions', ''))
+        try:
+            result, telemetry = await asyncio.to_thread(execute_agent, self.binary, self.data, session,
+                os.environ.get('OPENAI_KEY', ''), self.reviewer.token_handler.count_tokens,
+                self.reviewer.vars.get('extra_instructions', ''))
+        except Exception as error:
+            # Only fixed diagnostic codes from this trusted backend are retained,
+            # not raw provider responses, prompts, tool arguments or credentials.
+            self.evidence.setdefault('mirrobot_failures', []).append({
+                'chunk': index + 1, 'type': type(error).__name__,
+                'code': str(error) if isinstance(error, ValueError) else 'backend execution failure'})
+            raise
         expected = {p: sha256(text) for p, text in chunk}
         if (set(result['coverage']) != set(expected) or
                 any(v['sha256'] != expected[p] or v['lines'] != v['delivered_lines']
