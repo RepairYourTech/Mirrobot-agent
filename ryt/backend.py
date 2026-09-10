@@ -159,12 +159,26 @@ def sandbox_command(binary, data, work, output):
                       'Review this exact PR chunk. Batch independent context and diff reads. Inspect every diff page.']
 
 
-def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_policy=""):
+def session_budget(deadline, remaining_chunks, now=None):
+    if type(remaining_chunks) is not int or remaining_chunks < 1:
+        raise ValueError('invalid remaining chunk count')
+    left = int(deadline - (time.monotonic() if now is None else now))
+    granted = min(LOCK['session_timeout_seconds'], left // remaining_chunks)
+    if granted < 30:
+        raise ValueError('total review execution budget exhausted')
+    return granted
+
+
+def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_policy="", timeout_seconds=None):
     work = session_root / 'work'; output = session_root / 'evidence'
     work.mkdir(); output.mkdir()
     (work / 'system.txt').write_text(review_prompt() + '\nTRUSTED RYT REVIEW POLICY:\n' + trusted_policy)
     stdout_path = session_root / 'events.jsonl'; stderr_path = session_root / 'stderr.log'
     started = time.monotonic()
+    if timeout_seconds is None:
+        timeout_seconds = LOCK['session_timeout_seconds']
+    if not 30 <= timeout_seconds <= LOCK['session_timeout_seconds']:
+        raise ValueError('invalid session allocation')
     with ProviderBridge(api_key, count_tokens) as bridge:
         write_json(work / 'opencode.json', agent_config(bridge.url, bridge.token))
         context = load_json(read_text(data / 'context.json', 4 * 1024 * 1024))
@@ -189,7 +203,7 @@ def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_pol
                         print(json.dumps({'mirrobot_elapsed': round(elapsed), 'model_requests': len(bridge.records),
                             'completed_requests': sum(bool(r['finish_reasons']) for r in bridge.records),
                             'tool_calls': len(tool_events)}), flush=True)
-                    if (bridge.failed.is_set() or time.monotonic()-started > 850 or
+                    if (bridge.failed.is_set() or time.monotonic()-started > timeout_seconds or
                             stdout_path.stat().st_size > 16*1024*1024 or stderr_path.stat().st_size > 2*1024*1024):
                         raise ValueError('provider/session failure: ' + getattr(bridge, 'error', 'execution budget exceeded'))
                     time.sleep(0.5)
@@ -227,7 +241,7 @@ def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_pol
                 raise ValueError('model input and reported coverage differ')
         telemetry = {'backend': 'mirrobot-opencode', 'upstream': LOCK['upstream'],
             'opencode_version': LOCK['opencode']['version'], 'model': MODEL, 'reasoning_effort': 'max',
-            'elapsed_seconds': round(time.monotonic()-started, 3), 'provider_requests': bridge.records,
+            'elapsed_seconds': round(time.monotonic()-started, 3), 'budget_seconds': timeout_seconds, 'provider_requests': bridge.records,
             'tool_events': tools, 'dispositions': result['files'], 'delivery': result['coverage']}
         write_json(session_root / 'telemetry.json', telemetry)
     return result, telemetry
@@ -236,6 +250,7 @@ def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_pol
 class ReviewBackend:
     def __init__(self, reviewer, evidence, chunks):
         self.reviewer = reviewer; self.evidence = evidence
+        self.deadline = time.monotonic() + LOCK['review_timeout_seconds']
         self.temporary = tempfile.TemporaryDirectory(prefix='ryt-mirrobot-')
         self.root = Path(self.temporary.name)
         self.binary = install_opencode(self.root)
@@ -307,7 +322,8 @@ class ReviewBackend:
         try:
             result, telemetry = await asyncio.to_thread(execute_agent, self.binary, self.data, session,
                 os.environ.get('OPENAI_KEY', ''), self.reviewer.token_handler.count_tokens,
-                self.reviewer.vars.get('extra_instructions', ''))
+                self.reviewer.vars.get('extra_instructions', ''),
+                session_budget(self.deadline, len(self.chunks)-index))
         except Exception as error:
             # Only fixed diagnostic codes from this trusted backend are retained,
             # not raw provider responses, prompts, tool arguments or credentials.

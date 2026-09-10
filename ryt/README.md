@@ -29,7 +29,8 @@ input compaction, system installation or runner-administration capability.
 A disposition plus independently verified provider receipts proves input delivery
 and a completed model response, not that an AI
 understood every line or that the code has no defects. Per-request context is 128K,
-output 16K, request timeout 600 seconds; sessions are capped at 850 seconds/64 model
+output 16K, request timeout 600 seconds; sessions are allocated from an 80-minute total review budget, at most 30 minutes per
+chunk (divided fairly when multiple chunks remain), with 64 model
 calls/384 tool calls. RYT retains its six-chunk and total-job limits. Oversized or
 failed work remains incomplete; it must not be relabeled clean. Large background
 snapshot files (>2MiB) and non-regular entries are unavailable as full-file reads,

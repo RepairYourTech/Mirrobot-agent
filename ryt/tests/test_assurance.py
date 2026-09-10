@@ -232,3 +232,12 @@ class PrefillBoundaries(unittest.TestCase):
             write_json(root/'out/prefill.json',receipts)
             self.assertTrue(tools.call('submit_review',review())['accepted'])
             self.assertEqual([event['tool'] for event in tools.events],['submit_review'])
+
+class ExecutionBudget(unittest.TestCase):
+    def test_larger_agent_investigations_share_the_existing_whole_job_budget(self):
+        from ryt.backend import session_budget
+        self.assertEqual(session_budget(5800,1,1000),1800)
+        self.assertEqual(session_budget(5800,6,1000),800)
+        self.assertEqual(session_budget(1900,3,1000),300)
+        with self.assertRaises(ValueError):session_budget(1010,1,1000)
+        with self.assertRaises(ValueError):session_budget(5800,0,1000)

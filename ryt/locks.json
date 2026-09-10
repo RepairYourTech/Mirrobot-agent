@@ -7,7 +7,7 @@
   "context_tokens": 131072,
   "output_tokens": 16384,
   "request_timeout_seconds": 600,
-  "session_timeout_seconds": 850,
+  "session_timeout_seconds": 1800,
   "max_model_calls": 64,
   "max_tools": 384,
   "opencode": {
@@ -15,5 +15,6 @@
     "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.30/opencode-linux-x64.tar.gz",
     "sha256": "55007246858165496ff85ba1c2b648f7421e8e2013bf4189a680c9ff8e699d17",
     "member": "opencode"
-  }
+  },
+  "review_timeout_seconds": 4800
 }
