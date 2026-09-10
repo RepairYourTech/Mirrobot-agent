@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "upstream": "6c6b935eab5d0d16266df3d5c2a485b4a3b1d859",
+  "model": "openai/glm-5.3-flash",
+  "endpoint": "https://api.z.ai/api/coding/paas/v4/chat/completions",
+  "reasoning_effort": "max",
+  "context_tokens": 131072,
+  "output_tokens": 16384,
+  "request_timeout_seconds": 600,
+  "session_timeout_seconds": 850,
+  "max_model_calls": 64,
+  "max_tools": 384,
+  "opencode": {
+    "version": "1.18.30",
+    "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.30/opencode-linux-x64.tar.gz",
+    "sha256": "55007246858165496ff85ba1c2b648f7421e8e2013bf4189a680c9ff8e699d17",
+    "member": "opencode"
+  }
+}

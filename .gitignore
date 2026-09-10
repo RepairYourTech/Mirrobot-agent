@@ -11,3 +11,7 @@ tools/mention-worker/.wrangler/
 
 # Local operator token (never commit)
 token.txt
+
+# RYT local-only execution artifacts
+ryt/**/__pycache__/
+ryt/**/*.pyc

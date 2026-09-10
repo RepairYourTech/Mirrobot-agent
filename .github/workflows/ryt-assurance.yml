@@ -1,0 +1,35 @@
+name: RYT isolated reviewer assurance
+on:
+  push:
+    paths: ['ryt/**', '.github/workflows/ryt-assurance.yml']
+  pull_request:
+    paths: ['ryt/**', '.github/workflows/ryt-assurance.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  assurance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install isolated-test prerequisites on the ephemeral runner
+        run: sudo apt-get update -qq && sudo apt-get install -y bubblewrap
+      - name: Fetch and verify pinned OpenCode
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from ryt.backend import install_opencode
+          binary = install_opencode(Path(os.environ['RUNNER_TEMP']))
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('RYT_OPENCODE_BIN=' + str(binary) + '\n')
+          PY
+      - name: Security, completeness and actual OpenCode integration tests
+        run: python3 -m unittest discover -s ryt/tests -v
+      - name: Upstream prompt contracts
+        run: |
+          bash .github/scripts/assemble-prompt.sh --verify
+          bash .github/scripts/prompt-rule-fixtures.sh
