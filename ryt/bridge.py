@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 from ryt.common import load_json, sha256, write_json
 from ryt.diagnostics import BridgeFailure, safe_failure
+from ryt.planning import INITIAL_INPUT_LIMIT
 from pathlib import Path
 
 ENDPOINT = 'https://api.z.ai/api/coding/paas/v4/chat/completions'
@@ -141,9 +142,22 @@ class ProviderBridge:
         payload['reasoning_effort'] = 'max'
         payload['max_tokens'] = min(requested, OUTPUT_TOKENS)
         payload['stream_options'] = {'include_usage': True}
+        # A transient trusted budget notice is never a replacement for history.
+        # It is inserted into this request only; OpenCode retains its full original conversation.
+        before_notice = self.count_tokens(json.dumps(payload))
+        remaining = CONTEXT_TOKENS - OUTPUT_TOKENS - 1024 - before_notice
+        payload['messages'].insert(0, {'role':'system', 'content':
+            f'RYT SESSION CONTEXT: approximately {remaining} input tokens remain after the full '
+            '32K output reservation. Investigate only this session assigned files and relevant '
+            'cross-file contracts. If fewer than 20000 remain, avoid redundant broad reads and '
+            'finalize supported findings and file dispositions. Never invent a clean result '
+            'or claim unfinished inspection completed. Do not ask for repeated full repository dumps.'})
         # Bound context without secretly clipping/compacting the model's inputs.
         tokens = self.count_tokens(json.dumps(payload))
         if tokens > CONTEXT_TOKENS - OUTPUT_TOKENS - 1024:
+            raise BridgeFailure('context_limit')
+        if not self.records and self.prefill is not None and tokens > INITIAL_INPUT_LIMIT:
+            # A bad plan is rejected before spending a model request, not halfway through review.
             raise BridgeFailure('context_limit')
         prefilled = self.prefill_receipts(payload['messages'])
         with self.lock:
@@ -153,7 +167,8 @@ class ProviderBridge:
                 raise BridgeFailure('call_limit')
             record = {'model': payload['model'], 'reasoning_effort': payload['reasoning_effort'],
                       'request_sha256': sha256(json.dumps(payload, sort_keys=True)),
-                      'estimated_input_tokens': tokens, 'max_output_tokens': payload['max_tokens'], 'finish_reasons': [], 'usage': {}, 'reported_models': [],
+                      'estimated_input_tokens': tokens,
+                      'remaining_input_tokens': CONTEXT_TOKENS - OUTPUT_TOKENS - 1024 - tokens, 'max_output_tokens': payload['max_tokens'], 'finish_reasons': [], 'usage': {}, 'reported_models': [],
                       'tool_results_sha256': self.receipts(payload['messages']), 'prefilled_files': prefilled}
             self.records.append(record)
         return record

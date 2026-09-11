@@ -6,7 +6,7 @@ from ryt.common import confined, load_json, read_text, sha256, write_json
 from ryt.probe import run_probe
 
 PAGE_LINES = 240
-PAGE_BYTES = 24000
+PAGE_BYTES = 8000
 OUTPUT_BYTES = 32768
 
 
@@ -100,8 +100,8 @@ class RepositoryTools:
         if name == 'list_files':
             paths = self.available(args.get('prefix', ''))
             offset = integer(args.get('offset', 0), maximum=len(paths))
-            return {'files': paths[offset:offset+150], 'total': len(paths),
-                    'next_offset': offset + 150 if offset + 150 < len(paths) else None}
+            return {'files': paths[offset:offset+20], 'total': len(paths),
+                    'next_offset': offset + 50 if offset + 50 < len(paths) else None}
         if name == 'read_file':
             revision = args.get('revision', 'head')
             if revision not in ('head', 'base'):
@@ -126,9 +126,9 @@ class RepositoryTools:
                 if len(matches) >= 5000:
                     break
             offset = integer(args.get('offset', 0), maximum=len(matches))
-            return {'matches': matches[offset:offset+50], 'matches_collected': len(matches),
+            return {'matches': matches[offset:offset+20], 'matches_collected': len(matches),
                     'truncated': len(matches) >= 5000,
-                    'next_offset': offset+50 if offset+50 < len(matches) else None}
+                    'next_offset': offset+20 if offset+20 < len(matches) else None}
         if name == 'run_probe':
             result = run_probe(args['language'], args['code'], self.data / 'head')
             if result['exit_code'] == 'timeout':

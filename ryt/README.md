@@ -57,3 +57,23 @@ input+output remains within RYT128K policy. The previous16K cap could terminate
 long maximum-reasoning responses. Truncation still fails; no partial response is
 accepted, no weaker reasoning or automatic retry/fallback is introduced. Typed
 stream-failure codes and final metadata distinguish limits from transport failures.
+
+
+## Bounded multi-file investigation sessions
+
+A review is planned before inference into at most six independent sessions. Each
+normally contains at most four files and targets 8192 diff tokens, with the full
+initial request estimated below 49152 tokens to leave room for investigation and
+the unchanged 32K output reservation. An indivisible file above the diff target is
+kept intact only when its full initial packet fits. Otherwise the job fails with
+an explicit split-required error; nothing is silently omitted or clipped.
+
+Every session starts with fresh OpenCode state and the same immutable head/base
+snapshot. Cross-file reads remain available, including files assigned to other
+sessions. Histories are not summarized into replacement context. All original
+diffs, paths, order and bytes must match the plan before the existing publisher
+can run. The final coverage verifier accounts for every successful session. The
+six-session, 80-minute reasoning, 90-minute job and maximum-reasoning constraints
+remain unchanged. Smaller fully paginated search/read replies reduce needless
+context growth; the bridge discloses remaining headroom and still rejects an
+oversized request rather than fabricating a completed review.
