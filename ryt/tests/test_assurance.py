@@ -300,3 +300,16 @@ class ProviderCompletionBoundaries(unittest.TestCase):
         for limit in [True,0,-1,'32768']:
             with ProviderBridge('FAKE',len) as bridge,self.assertRaises(ValueError):
                 bridge.validate({'model':'glm-5.3-flash','messages':[],'stream':True,'max_completion_tokens':limit})
+
+
+class ReviewClassificationContract(unittest.TestCase):
+    def test_limits_are_disclosed_without_suppressing_real_security_findings(self):
+        from ryt.backend import review_prompt
+        prompt=review_prompt()
+        for required in ['Coverage is mandatory', 'report all real findings',
+                         'an actionable finding', 'current caller/guard/contract',
+                         'one root cause at its primary changed location',
+                         'relevant_tests/security_concerns/merge_recommendation']:
+            self.assertIn(required,prompt)
+        self.assertIn('never excuse an actual security or correctness defect as a limitation',prompt)
+        self.assertIn('no submit means failure',prompt)
