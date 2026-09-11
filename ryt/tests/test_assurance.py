@@ -205,6 +205,9 @@ class DeliveryBoundaries(unittest.TestCase):
         self.assertEqual(ProviderBridge.receipts([{'role':'assistant','content':text}]),[])
         self.assertEqual(ProviderBridge.receipts([{'role':'tool','content':text[:-5]}]),[])
         self.assertEqual(ProviderBridge.receipts([{'role':'tool','content':text}]),[sha256(json.dumps(value,sort_keys=True))])
+        generic={'accepted':True,'files':3,'findings':1}
+        self.assertEqual(ProviderBridge.receipts([{'role':'tool','content':json.dumps(generic)}]),
+                         [sha256(json.dumps(generic,sort_keys=True))])
 
     def test_requirements_context_is_available_without_auto_loading_repo_instructions(self):
         with tempfile.TemporaryDirectory() as temp:

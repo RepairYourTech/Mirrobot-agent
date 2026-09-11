@@ -95,7 +95,11 @@ class ProviderBridge:
                     data = load_json(text)
                 except (ValueError, TypeError):
                     continue
-                if isinstance(data, dict) and {'path', 'text', 'sha256', 'offset', 'end'} <= data.keys():
+                # Every successful MCP tool result is JSON from the trusted tool server.
+                # Hash the complete normalized object, not only paginated file reads,
+                # so the external verifier can prove context/search/probe/submission
+                # results reached an actual provider request unchanged as well.
+                if isinstance(data, dict):
                     receipts.add(sha256(json.dumps(data, sort_keys=True)))
         return sorted(receipts)
 
