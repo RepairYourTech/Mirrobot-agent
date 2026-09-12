@@ -35,16 +35,17 @@ class SessionPlanning(unittest.TestCase):
     def test_unfit_file_and_unfit_scope_fail_instead_of_truncating_or_expanding_calls(self):
         with self.assertRaisesRegex(ValueError,'initial context'):
             self.plan([('huge','x'*30000)])
-        # The trusted assurance test follows the pinned planner constant instead
-        # of hard-coding today's session count, so a separately reviewed limit
-        # change can still be tested by base-revision control code.
+        # The trusted assurance test follows the pinned planner constants so
+        # the base-revision controller can validate a separately reviewed cap change.
+        self.assertEqual(MAX_SESSIONS,8)
         at_limit=[(f'f{i}','x') for i in range(MAX_SESSIONS * MAX_FILES)]
         chunks,plan=self.plan(at_limit)
         self.assertEqual(len(chunks),MAX_SESSIONS)
         self.assertEqual(plan['max_sessions'],MAX_SESSIONS)
         self.assertEqual([item for chunk in chunks for item in chunk],at_limit)
-        with self.assertRaisesRegex(ValueError,'session safety limit'):
+        with self.assertRaisesRegex(ValueError,'eight-session'):
             self.plan([(f'f{i}','x') for i in range(MAX_SESSIONS * MAX_FILES + 1)])
+
 
     def test_empty_duplicate_and_noninteger_counters_are_rejected(self):
         for items in [[],[('x','')],[('x','one'),('x','two')]]:
