@@ -36,6 +36,14 @@ Any `.github/` change on a PR's side of the merge-base (detected as a **union** 
 - **The bot identity's scopes are minimal by construction**: account PAT = `public_repo` only, no `workflow` scope (preserving GitHub's workflow-push rejection, bot-setup hard-fails the token otherwise); App = a four-permission set.
 - **Git auth rides an in-process extraheader**: never written to `.git/config`; `persist-credentials: false` on every checkout.
 
+## RYT isolated reviewer boundary
+
+The additive `ryt/` reviewer profile is stricter than the upstream general-purpose OpenCode workflows described elsewhere on this page. Its engine Bubblewrap invocation **does not use `--share-net`**. Bubblewrap owns a private network namespace; a trusted in-sandbox relay listens only on namespace-local `127.0.0.1` and forwards bytes to a bind-mounted Unix-domain socket. The host-owned `ProviderBridge` authenticates that socket traffic and is the only component allowed to contact the immutable Z.AI endpoint. OpenCode's deny-by-default permission map remains useful defense in depth, but compromise of OpenCode does not restore a host/Internet route.
+
+`ryt-assurance.yml` is likewise split-trust. Pull requests use `pull_request_target` so the workflow definition comes from the protected base revision. The exact PR head is checked out separately as the **subject** implementation and may run its tests only on the disposable hosted runner. Prompt-contract shell controllers are executed only from the trusted base checkout while inspecting the subject checkout as data. A PR cannot replace the shell script that CI treats as its assurance controller.
+
+Persistent RYT review hosts assume process cleanup can be skipped by SIGKILL, OOM or host failure. Session data therefore lives below a mode-0700, owner-checked `ryt-mirrobot-sessions` root. Startup performs a fail-closed stale sweep, live review directories are heartbeated, and an independent systemd timer can run the same bounded janitor while the agent is absent. The janitor only considers `review-*` directories older than a threshold greater than the maximum source-controlled review timeout and rejects symlinks, foreign ownership and group/world-readable state.
+
 ## Config and credential lifecycle
 
 The `OPENCODE_CONFIG_JSON` secret is the most sensitive object in the pipeline, so it gets defense in depth:

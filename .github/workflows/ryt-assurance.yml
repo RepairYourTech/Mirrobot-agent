@@ -1,9 +1,10 @@
 name: RYT isolated reviewer assurance
 on:
   push:
-    paths: ['ryt/**', '.github/workflows/ryt-assurance.yml']
-  pull_request:
-    paths: ['ryt/**', '.github/workflows/ryt-assurance.yml']
+    branches: [main]
+    paths: ['ryt/**', '.github/scripts/**', '.github/workflows/ryt-assurance.yml', 'ops/systemd/**']
+  pull_request_target:
+    paths: ['ryt/**', '.github/scripts/**', '.github/workflows/ryt-assurance.yml', 'ops/systemd/**']
   workflow_dispatch:
 permissions:
   contents: read
@@ -12,9 +13,45 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      # pull_request_target is load-bearing: the workflow/controller comes from
+      # protected base code. The PR is a separate untrusted subject checkout.
+      - name: Check out trusted assurance controller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
+          path: trusted
           persist-credentials: false
+      - name: Check out exact subject revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          path: subject
+          persist-credentials: false
+      - name: Verify checkout separation
+        env:
+          EVENT_HEAD: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          TRUSTED_BASE: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git -C subject rev-parse HEAD)" = "$EVENT_HEAD"
+          test "$(git -C trusted rev-parse HEAD)" = "$TRUSTED_BASE"
+          test "$(realpath subject)" != "$(realpath trusted)"
+      - name: Stage trusted assurance controls over the subject checkout
+        run: |
+          set -euo pipefail
+          rm -rf subject/ryt/tests
+          cp -a trusted/ryt/tests subject/ryt/tests
+          install -m 0755 trusted/.github/scripts/assemble-prompt.sh subject/.github/scripts/assemble-prompt.sh
+          install -m 0755 trusted/.github/scripts/prompt-rule-fixtures.sh subject/.github/scripts/prompt-rule-fixtures.sh
+          cmp -s trusted/.github/scripts/assemble-prompt.sh subject/.github/scripts/assemble-prompt.sh
+          cmp -s trusted/.github/scripts/prompt-rule-fixtures.sh subject/.github/scripts/prompt-rule-fixtures.sh
+      - name: Upstream prompt contracts under trusted control code
+        working-directory: subject
+        run: |
+          set -euo pipefail
+          bash .github/scripts/assemble-prompt.sh --verify
+          bash .github/scripts/prompt-rule-fixtures.sh
       - name: Install isolated-test prerequisites on the ephemeral runner
         run: |
           sudo apt-get update -qq
@@ -28,19 +65,29 @@ jobs:
             printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' '/usr/bin/bwrap flags=(default_allow) {' '  userns,' '}' | sudo tee /etc/apparmor.d/ryt-bwrap-ci >/dev/null
             sudo apparmor_parser -r /etc/apparmor.d/ryt-bwrap-ci
           fi
-      - name: Fetch and verify pinned OpenCode
+      - name: Fetch and verify pinned OpenCode with trusted installer
+        working-directory: trusted
         run: |
           python3 - <<'PY'
           import os
           from pathlib import Path
           from ryt.backend import install_opencode
           binary = install_opencode(Path(os.environ['RUNNER_TEMP']))
-          with open(os.environ['GITHUB_ENV'], 'a') as env:
-              env.write('RYT_OPENCODE_BIN=' + str(binary) + '\n')
+          path = Path(os.environ['RUNNER_TEMP']) / 'ryt-opencode-bin-path'
+          path.write_text(str(binary))
           PY
       - name: Security, completeness and actual OpenCode integration tests
-        run: python3 -m unittest discover -s ryt/tests -v
-      - name: Upstream prompt contracts
+        working-directory: subject
         run: |
-          bash .github/scripts/assemble-prompt.sh --verify
-          bash .github/scripts/prompt-rule-fixtures.sh
+          set -euo pipefail
+          binary=$(cat "$RUNNER_TEMP/ryt-opencode-bin-path")
+          test -x "$binary"
+          mkdir -m 0700 "$RUNNER_TEMP/ryt-subject-home"
+          env -i \
+            PATH="$PATH" \
+            HOME="$RUNNER_TEMP/ryt-subject-home" \
+            LANG=C.UTF-8 \
+            CI=true \
+            RUNNER_TEMP="$RUNNER_TEMP" \
+            RYT_OPENCODE_BIN="$binary" \
+            python3 -I -m unittest discover -s ryt/tests -v

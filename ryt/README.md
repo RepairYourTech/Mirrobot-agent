@@ -20,9 +20,21 @@ No GitHub credential enters OpenCode. The upstream broad token-aware shell profi
 is deliberately not used on RYT's persistent hosts. Instead the agent has only
 custom snapshot tools; scratch code runs under Bubblewrap/seccomp with no network,
 no host home, read-only repository files and bounded CPU/time/files/output. The
-provider bridge can call only the fixed Z.AI endpoint and retains the real API key
-outside the agent. No public session sharing, external plugins, model fallback,
-input compaction, system installation or runner-administration capability.
+OpenCode engine itself also has a private Bubblewrap network namespace: it has no
+host or Internet route. A trusted relay on sandbox-local loopback forwards only to
+a mode-0600 Unix-domain socket owned by the host provider bridge; that bridge can
+call only the fixed Z.AI endpoint and retains the real API key outside the agent.
+OpenCode permission rules are defense-in-depth, not the egress boundary. No public
+session sharing, external plugins, model fallback, input compaction, system
+installation or runner-administration capability.
+
+Persistent-host state is isolated under a mode-0700 `ryt-mirrobot-sessions` root.
+Every review sweeps bounded stale `review-*` directories before creating a new
+session, active sessions heartbeat their directory, and normal teardown removes the
+current tree. The independent `ops/systemd/ryt-mirrobot-hygiene.timer` contract
+covers SIGKILL/OOM/host-crash leftovers even when no later review starts. Sweeping
+refuses symlinks, foreign ownership, permissive directories and ages shorter than
+the maximum review wall time; it never broad-deletes arbitrary runner paths.
 
 ## Limits and guarantees
 

@@ -190,6 +190,12 @@
 - **Platform-bug workarounds are explicit:** phantom push runs on dispatch-only workflows are suppressed with a never-matching push trigger + runtime input validation; `secrets`-in-`if` limitations are worked around via a derived job-env boolean
 - **Graceful degradation with visible signals:** a missing trust branch (no `dev`) degrades to main-only scrubbing; roster API failure emits an explicit "unavailable" line plus a step-summary note instead of a fabricated roster; bootstrap without a usable bot token degrades to copy-paste instructions in the summary
 
+## RYT isolated-review overlay
+
+The `ryt/` package is an additive deployment overlay and does not inherit the upstream OpenCode network/session assumptions. Its OpenCode engine runs in a Bubblewrap-created private network namespace with no `--share-net`; sandbox-local loopback reaches a trusted TCP→Unix-socket relay, and only the host-side authenticated `ProviderBridge` owns Internet egress to the pinned model endpoint. The provider credential never enters the namespace.
+
+RYT assurance uses a trusted-base `pull_request_target` controller with separate `trusted/` and `subject/` checkouts. PR Python is the test subject on an ephemeral hosted runner; trusted `.github/scripts` bytes come only from the base checkout. On persistent inference hosts, mode-0700 review roots are swept before every review and by the independent systemd hygiene timer so abnormal process death cannot indefinitely retain snapshots/transcripts.
+
 ## Cross-Cutting Concerns
 
 **Secrets & masking:** Credential leaves inside `OPENCODE_CONFIG_JSON` (provider keys, MCP headers, credential-bearing URLs) are each `::add-mask::`ed at boot by bot-setup; the config is written `chmod 600` outside the workspace, and (together with any materialized plugin files (`OPENCODE_PLUGINS_JSON*` variables)) deleted seconds after opencode boots (once-at-boot semantics; `opencode-cleanup.sh` provides the waiter/now cleanup with an `if: always()` guarantee). Git auth rides an in-process extraheader, never `.git/config`; `persist-credentials: false` on every token-bearing checkout.

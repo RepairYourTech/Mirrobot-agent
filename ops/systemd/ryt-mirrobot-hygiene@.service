@@ -1,0 +1,19 @@
+[Unit]
+Description=Remove stale Mirrobot review state for review lane %i
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=ryt-pr-review-%i
+WorkingDirectory=/opt/ryt-pr-agent/runtime
+Environment=RYT_MIRROBOT_SESSION_ROOT=/opt/ryt-runners/ryt-birdinference-review-%i/_work/_temp/ryt-mirrobot-sessions
+ExecStart=/opt/ryt-pr-agent/runtime/.venv/bin/python -m ryt.hygiene
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/opt/ryt-runners/ryt-birdinference-review-%i/_work/_temp/ryt-mirrobot-sessions
