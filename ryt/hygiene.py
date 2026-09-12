@@ -1,5 +1,6 @@
 """Fail-closed lifecycle hygiene for persistent Mirrobot review hosts."""
 import argparse
+import json
 import os
 from pathlib import Path
 import shutil
@@ -7,9 +8,7 @@ import stat
 import tempfile
 import time
 
-from ryt.common import load_json
-
-LOCK = load_json(Path(__file__).with_name('locks.json').read_text())
+LOCK = json.loads(Path(__file__).with_name('locks.json').read_text())
 SESSION_PREFIX = 'review-'
 # No valid review may outlive review_timeout_seconds. Keep an additional 30-minute
 # margin for scheduler/cleanup overhead before a crashed directory becomes stale.

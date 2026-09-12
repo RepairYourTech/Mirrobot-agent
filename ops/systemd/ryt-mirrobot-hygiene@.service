@@ -5,9 +5,9 @@ After=local-fs.target
 [Service]
 Type=oneshot
 User=ryt-pr-review-%i
-WorkingDirectory=/opt/ryt-pr-agent/runtime
+WorkingDirectory=/opt/ryt-pr-agent/mirrobot-source
 Environment=RYT_MIRROBOT_SESSION_ROOT=/opt/ryt-runners/ryt-birdinference-review-%i/_work/_temp/ryt-mirrobot-sessions
-ExecStart=/opt/ryt-pr-agent/runtime/.venv/bin/python -m ryt.hygiene
+ExecStart=/opt/ryt-pr-agent/runtime/.venv/bin/python /opt/ryt-pr-agent/mirrobot-source/ryt/hygiene.py
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true

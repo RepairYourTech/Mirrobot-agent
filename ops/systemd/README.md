@@ -11,9 +11,20 @@ The session root remains inside each runner's stable `_work/_temp`, so the in-pr
 
 The janitor refuses symlink, foreign-owned, non-directory, or group/world-accessible `review-*` entries. It only removes entries older than the source-controlled stale threshold, which is always greater than the maximum review wall time in `ryt/locks.json`.
 
-After the updated runtime has been deployed to `/opt/ryt-pr-agent/runtime`:
+After the reviewed Mirrobot source has been installed read-only at `/opt/ryt-pr-agent/mirrobot-source` (the production PR reviewer may still use its per-job checksum-pinned copy):
 
 ```bash
+sudo rm -rf /opt/ryt-pr-agent/mirrobot-source.new
+sudo install -d -m 0755 -o root -g root /opt/ryt-pr-agent/mirrobot-source.new
+sudo cp -a ryt /opt/ryt-pr-agent/mirrobot-source.new/ryt
+sudo chown -R root:root /opt/ryt-pr-agent/mirrobot-source.new
+sudo chmod -R go-w /opt/ryt-pr-agent/mirrobot-source.new
+sudo rm -rf /opt/ryt-pr-agent/mirrobot-source.old
+if [ -d /opt/ryt-pr-agent/mirrobot-source ]; then
+  sudo mv /opt/ryt-pr-agent/mirrobot-source /opt/ryt-pr-agent/mirrobot-source.old
+fi
+sudo mv /opt/ryt-pr-agent/mirrobot-source.new /opt/ryt-pr-agent/mirrobot-source
+
 for lane in 01 02; do
   user="ryt-pr-review-$lane"
   root="/opt/ryt-runners/ryt-birdinference-review-$lane/_work/_temp/ryt-mirrobot-sessions"
