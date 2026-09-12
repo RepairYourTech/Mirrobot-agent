@@ -1,7 +1,7 @@
 """Complete-file planning with exploration headroom, before any inference call."""
 from ryt.common import sha256
 
-MAX_SESSIONS = 6
+MAX_SESSIONS = 8
 MAX_FILES = 4
 DIFF_TARGET_TOKENS = 8192
 INITIAL_INPUT_LIMIT = 49152
@@ -33,7 +33,7 @@ def plan_sessions(chunks, count_tokens, estimate_initial):
         current.append(item)
     if current:planned.append(current)
     if len(planned)>MAX_SESSIONS:
-        raise ValueError('review exceeds six-session safety limit; split PR required')
+        raise ValueError('review exceeds eight-session safety limit; split PR required')
     # Preserve every old/new hunk byte, order and path; no model-driven exclusions.
     if [item for group in planned for item in group] != fragments:
         raise ValueError('planned review input changed')

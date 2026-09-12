@@ -41,9 +41,9 @@ the maximum review wall time; it never broad-deletes arbitrary runner paths.
 A disposition plus independently verified provider receipts proves input delivery
 and a completed model response, not that an AI
 understood every line or that the code has no defects. Per-request context is 128K,
-output 32K, request timeout 600 seconds; sessions are allocated from an 80-minute total review budget, at most 30 minutes per
+output 32K, request timeout 600 seconds; sessions are allocated from an 85-minute total review budget, at most 30 minutes per
 chunk (divided fairly when multiple chunks remain), with 64 model
-calls/384 tool calls. RYT retains its six-chunk and total-job limits. Oversized or
+calls/384 tool calls. RYT retains its eight-session and total-job limits. Oversized or
 failed work remains incomplete; it must not be relabeled clean. Large background
 snapshot files (>2MiB) and non-regular entries are unavailable as full-file reads,
 explicitly inventoried, while the changed-file diff still follows RYT policy.
@@ -73,7 +73,7 @@ stream-failure codes and final metadata distinguish limits from transport failur
 
 ## Bounded multi-file investigation sessions
 
-A review is planned before inference into at most six independent sessions. Each
+A review is planned before inference into at most eight independent sessions. Each
 normally contains at most four files and targets 8192 diff tokens, with the full
 initial request estimated below 49152 tokens to leave room for investigation and
 the unchanged 32K output reservation. An indivisible file above the diff target is
@@ -85,7 +85,7 @@ snapshot. Cross-file reads remain available, including files assigned to other
 sessions. Histories are not summarized into replacement context. All original
 diffs, paths, order and bytes must match the plan before the existing publisher
 can run. The final coverage verifier accounts for every successful session. The
-six-session, 80-minute reasoning, 90-minute job and maximum-reasoning constraints
+eight-session, 85-minute reasoning, 90-minute job and maximum-reasoning constraints
 remain unchanged. Smaller fully paginated search/read replies reduce needless
 context growth; the bridge discloses remaining headroom and still rejects an
 oversized request rather than fabricating a completed review.
