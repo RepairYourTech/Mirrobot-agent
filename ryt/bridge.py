@@ -1,8 +1,11 @@
 """Authenticated, fixed-upstream provider bridge. Provider key never enters OpenCode."""
 import hmac
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 import json
 import secrets
+import socketserver
+import tempfile
+import os
 import threading
 import urllib.error
 import urllib.request
@@ -17,8 +20,13 @@ OUTPUT_TOKENS = LIMITS['output_tokens']
 CONTEXT_TOKENS = LIMITS['context_tokens']
 
 
+class ThreadingUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
+
+
+
 class ProviderBridge:
-    def __init__(self, api_key, count_tokens, *, endpoint=ENDPOINT):
+    def __init__(self, api_key, count_tokens, *, endpoint=ENDPOINT, socket_path=None):
         if endpoint != ENDPOINT:
             raise ValueError('provider endpoint is immutable')
         self.key = api_key
@@ -30,6 +38,14 @@ class ProviderBridge:
         self.receipt_path = None
         self.failed = threading.Event()
         self.lock = threading.Lock()
+        self._socket_temp = None
+        if socket_path is None:
+            self._socket_temp = tempfile.TemporaryDirectory(prefix='ryt-provider-')
+            socket_path = Path(self._socket_temp.name) / 'provider.sock'
+        self.socket_path = Path(socket_path)
+        self.socket_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if self.socket_path.exists() or self.socket_path.is_symlink():
+            raise ValueError('provider bridge socket path already exists')
         bridge = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -72,8 +88,8 @@ class ProviderBridge:
                     except OSError:
                         pass
 
-        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        self.server.daemon_threads = True
+        self.server = ThreadingUnixHTTPServer(str(self.socket_path), Handler)
+        os.chmod(self.socket_path, 0o600)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     @staticmethod
@@ -215,7 +231,12 @@ class ProviderBridge:
         self.server.server_close()
         self.thread.join(timeout=2)
         self.key = ''
+        try:
+            self.socket_path.unlink(missing_ok=True)
+        finally:
+            if self._socket_temp is not None:
+                self._socket_temp.cleanup()
 
     @property
     def url(self):
-        return 'http://127.0.0.1:' + str(self.server.server_port) + '/v1'
+        return 'http://127.0.0.1:8765/v1'

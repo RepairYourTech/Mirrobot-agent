@@ -136,8 +136,10 @@ class Boundaries(unittest.TestCase):
         self.assertEqual(config['permission'],{'*':'deny','ryt_*':'allow'})
         self.assertEqual(config['share'],'disabled');self.assertFalse(config['autoupdate'])
         self.assertEqual(config['plugin'],[]);self.assertEqual(config['compaction'],{'auto':False,'prune':False})
-        cmd=' '.join(sandbox_command(Path('/tmp/opencode'),Path('/tmp/data'),Path('/tmp/work'),Path('/tmp/out')))
+        cmd=' '.join(sandbox_command(Path('/tmp/opencode'),Path('/tmp/data'),Path('/tmp/work'),Path('/tmp/out'),Path('/tmp/bridge/provider.sock')))
         self.assertNotIn('GITHUB_TOKEN',cmd);self.assertIn('--clearenv',cmd)
+        self.assertNotIn('--share-net',cmd);self.assertIn('/engine/ryt/bridge_proxy.py',cmd)
+        self.assertIn('--ro-bind /tmp/bridge /bridge',cmd)
         self.assertIn('Coverage is mandatory',review_prompt())
 
     def test_probe_cannot_read_host_secret_write_repo_or_reach_network(self):
@@ -157,6 +159,51 @@ print('ISOLATION_OK')
             result=run_probe('python',code,root)
             self.assertEqual(result['exit_code'],0,result);self.assertIn('ISOLATION_OK',result['stdout'])
             self.assertFalse((root/'new').exists())
+
+
+class AssuranceWorkflowTrust(unittest.TestCase):
+    def test_pr_assurance_controller_and_scripts_come_from_base_revision(self):
+        workflow=(Path(__file__).resolve().parents[2]/'.github/workflows/ryt-assurance.yml').read_text()
+        self.assertIn('pull_request_target:',workflow)
+        self.assertNotIn('\n  pull_request:\n',workflow)
+        self.assertIn('path: trusted',workflow); self.assertIn('path: subject',workflow)
+        self.assertIn('github.event.pull_request.base.sha',workflow)
+        self.assertIn('github.event.pull_request.head.sha',workflow)
+        self.assertIn('github.event.pull_request.head.repo.full_name',workflow)
+        self.assertIn('rm -rf subject/ryt/tests',workflow)
+        self.assertIn('cp -a trusted/ryt/tests subject/ryt/tests',workflow)
+        self.assertIn('install -m 0755 trusted/.github/scripts/assemble-prompt.sh subject/.github/scripts/assemble-prompt.sh',workflow)
+        self.assertIn('install -m 0755 trusted/.github/scripts/prompt-rule-fixtures.sh subject/.github/scripts/prompt-rule-fixtures.sh',workflow)
+        self.assertLess(workflow.index('Upstream prompt contracts under trusted control code'),
+                        workflow.index('Security, completeness and actual OpenCode integration tests'))
+        self.assertIn('working-directory: trusted',workflow)
+        self.assertIn('env -i',workflow)
+        self.assertIn('python3 -I -m unittest discover -s ryt/tests -v',workflow)
+        self.assertNotIn('GITHUB_ENV',workflow)
+
+class PersistentHygiene(unittest.TestCase):
+    def test_stale_sessions_are_removed_but_live_sessions_survive(self):
+        import time
+        from ryt.hygiene import STALE_SECONDS, create_session_directory, sweep_stale_sessions
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {'RYT_MIRROBOT_SESSION_ROOT': str(Path(temp)/'sessions')}):
+            base=Path(temp)/'sessions'; base.mkdir(mode=0o700)
+            stale=base/'review-stale'; stale.mkdir(mode=0o700)
+            live=base/'review-live'; live.mkdir(mode=0o700)
+            now=time.time(); os.utime(stale,(now-STALE_SECONDS-10,now-STALE_SECONDS-10))
+            self.assertEqual(sweep_stale_sessions(now=now),['review-stale'])
+            self.assertFalse(stale.exists()); self.assertTrue(live.exists())
+            temporary,path=create_session_directory(); self.assertEqual(path.stat().st_mode & 0o777,0o700); temporary.cleanup()
+
+    def test_hygiene_refuses_symlink_permissive_and_too_short_age(self):
+        from ryt.hygiene import LOCK, sweep_stale_sessions
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {'RYT_MIRROBOT_SESSION_ROOT': str(Path(temp)/'sessions')}):
+            base=Path(temp)/'sessions'; base.mkdir(mode=0o700)
+            link=base/'review-link'; link.symlink_to('/tmp')
+            with self.assertRaises(RuntimeError): sweep_stale_sessions()
+            link.unlink(); bad=base/'review-open'; bad.mkdir(mode=0o755)
+            with self.assertRaises(RuntimeError): sweep_stale_sessions()
+            bad.chmod(0o700)
+            with self.assertRaises(ValueError): sweep_stale_sessions(max_age_seconds=LOCK['review_timeout_seconds'])
 
 if __name__=='__main__':unittest.main()
 
@@ -267,13 +314,13 @@ class HistoryAndStorage(unittest.TestCase):
         from ryt.backend import ReviewBackend
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ,{'RUNNER_TEMP':tmp}):
             def stop(folder):
-                self.assertEqual(folder.parent,Path(tmp))
+                self.assertEqual(folder.parent,Path(tmp)/'ryt-mirrobot-sessions')
                 raise RuntimeError('stop before any network')
             evidence={'repository':'owner/repo'}
             with patch('ryt.backend.install_opencode',side_effect=stop), self.assertRaisesRegex(RuntimeError,'stop'):
                 ReviewBackend(SimpleNamespace(),evidence,[])
             self.assertEqual(evidence['mirrobot_initialization_stage'],'verified_engine')
-            self.assertEqual(list(Path(tmp).iterdir()),[])
+            self.assertEqual(list((Path(tmp)/'ryt-mirrobot-sessions').iterdir()),[])
 
 class ProviderCompletionBoundaries(unittest.TestCase):
     def test_typed_failure_never_exposes_arbitrary_exception_messages(self):

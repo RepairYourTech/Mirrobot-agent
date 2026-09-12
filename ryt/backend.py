@@ -7,7 +7,6 @@ import re
 import signal
 import subprocess
 import tarfile
-import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -15,6 +14,7 @@ import urllib.request
 from ryt.bridge import ProviderBridge
 from ryt.context_packet import initial_packet
 from ryt.history import review_history
+from ryt.hygiene import create_session_directory, secure_active_session, touch_session
 from ryt.planning import plan_sessions, INITIAL_INPUT_LIMIT
 from ryt.tool_server import TOOLS
 from ryt.common import load_json, read_text, sha256, write_json
@@ -170,14 +170,17 @@ Do not return the review only as chat text: submit through the structured tool; 
 '''
 
 
-def sandbox_command(binary, data, work, output):
+def sandbox_command(binary, data, work, output, bridge_socket):
     command = base_sandbox()
-    # The engine alone can reach the authenticated fixed-endpoint bridge. The
-    # only code-execution tool creates a separate networkless child sandbox.
-    command += ['--share-net', '--ro-bind', '/etc/ssl', '/etc/ssl',
-                '--ro-bind', str(ROOT), '/engine', '--ro-bind', str(binary), '/opencode',
-                '--ro-bind', str(data), '/data', '--bind', str(work), '/work',
-                '--bind', str(output), '/evidence', '--chdir', '/work', '--clearenv']
+    # The engine gets its own network namespace. A trusted relay inside that
+    # namespace exposes only sandbox-local loopback and forwards exclusively to
+    # the authenticated host bridge over this read-only bind-mounted Unix socket.
+    # OpenCode permissions remain defense-in-depth, never the egress boundary.
+    bridge_socket = Path(bridge_socket)
+    command += ['--ro-bind', str(ROOT), '/engine', '--ro-bind', str(binary), '/opencode',
+                '--ro-bind', str(data), '/data', '--ro-bind', str(bridge_socket.parent), '/bridge',
+                '--bind', str(work), '/work', '--bind', str(output), '/evidence',
+                '--chdir', '/work', '--clearenv']
     variables = {'PATH': '/usr/bin:/bin', 'HOME': '/work', 'LANG': 'C.UTF-8',
         'XDG_CONFIG_HOME': '/work/config', 'XDG_DATA_HOME': '/work/share', 'XDG_CACHE_HOME': '/work/cache',
         'OPENCODE_CONFIG': '/work/opencode.json', 'OPENCODE_DISABLE_PROJECT_CONFIG': 'true',
@@ -186,7 +189,8 @@ def sandbox_command(binary, data, work, output):
         'OPENCODE_DISABLE_MODELS_FETCH': 'true', 'DO_NOT_TRACK': '1', 'CI': 'true'}
     for key, value in variables.items():
         command += ['--setenv', key, value]
-    return command + ['--', '/opencode', 'run', '--pure', '--format', 'json',
+    return command + ['--', 'python3', '-I', '/engine/ryt/bridge_proxy.py',
+                      '/bridge/' + bridge_socket.name, '--', '/opencode', 'run', '--pure', '--format', 'json',
                       '--model', MODEL, '--agent', 'ryt-review', '--title', 'RYT adversarial review',
                       'Review this exact PR chunk. Batch independent context and diff reads. Inspect every diff page.']
 
@@ -202,16 +206,20 @@ def session_budget(deadline, remaining_chunks, now=None):
 
 
 def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_policy="", timeout_seconds=None):
+    session_root = secure_active_session(session_root)
     work = session_root / 'work'; output = session_root / 'evidence'
-    work.mkdir(); output.mkdir()
+    work.mkdir(mode=0o700); output.mkdir(mode=0o700)
     (work / 'system.txt').write_text(review_prompt() + '\nTRUSTED RYT REVIEW POLICY:\n' + trusted_policy)
     stdout_path = session_root / 'events.jsonl'; stderr_path = session_root / 'stderr.log'
     started = time.monotonic()
+    touch_session(session_root)
     if timeout_seconds is None:
         timeout_seconds = LOCK['session_timeout_seconds']
     if not 30 <= timeout_seconds <= LOCK['session_timeout_seconds']:
         raise ValueError('invalid session allocation')
-    with ProviderBridge(api_key, count_tokens) as bridge:
+    bridge_dir = session_root / 'bridge'; bridge_dir.mkdir(mode=0o700)
+    bridge_socket = bridge_dir / 'provider.sock'
+    with ProviderBridge(api_key, count_tokens, socket_path=bridge_socket) as bridge:
         write_json(work / 'opencode.json', agent_config(bridge.url, bridge.token))
         context = load_json(read_text(data / 'context.json', 4 * 1024 * 1024))
         packet = initial_packet(context, load_json(read_text(data / 'diffs.json', 16 * 1024 * 1024)))
@@ -219,7 +227,7 @@ def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_pol
         request_path.write_text(bridge.input_packet(packet, output / 'prefill.json'))
         last_progress = 0
         with stdout_path.open('wb') as stdout, stderr_path.open('wb') as stderr, request_path.open('rb') as stdin:
-            process = subprocess.Popen(sandbox_command(binary, data, work, output),
+            process = subprocess.Popen(sandbox_command(binary, data, work, output, bridge_socket),
                 stdin=stdin, stdout=stdout, stderr=stderr,
                 env={'PATH': '/usr/bin:/bin'}, start_new_session=True)
             try:
@@ -227,6 +235,7 @@ def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_pol
                     elapsed = time.monotonic()-started
                     if elapsed-last_progress >= 30:
                         last_progress = elapsed
+                        touch_session(session_root)
                         events_path = output / 'tools.json'
                         tool_events = load_json(read_text(events_path)) if events_path.exists() else []
                         write_json(session_root / 'progress.json', {'elapsed_seconds': round(elapsed, 1),
@@ -241,6 +250,7 @@ def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_pol
                 if process.returncode != 0 or bridge.failed.is_set():
                     raise ValueError('OpenCode process/provider failed: ' + getattr(bridge, 'error', str(process.returncode)))
             finally:
+                touch_session(session_root)
                 # Capture the final terminal metadata, not merely the last 30s
                 # heartbeat. No raw prompt, reply, credential or stderr is copied.
                 events_path = output / 'tools.json'
@@ -291,10 +301,10 @@ class ReviewBackend:
     def __init__(self, reviewer, evidence, chunks):
         self.reviewer = reviewer; self.evidence = evidence
         self.deadline = time.monotonic() + LOCK['review_timeout_seconds']
-        # Snapshot files belong in the dedicated runner job directory, not the
-        # shared /tmp tmpfs whose inode pool can be exhausted by unrelated jobs.
-        self.temporary = tempfile.TemporaryDirectory(prefix='ryt-mirrobot-', dir=os.environ.get('RUNNER_TEMP'))
-        self.root = Path(self.temporary.name)
+        # Persistent runners may survive SIGKILL/OOM while the Python process does
+        # not. Sweep bounded stale review directories before every new review,
+        # then keep this review in a mode-0700 stable runner-temp namespace.
+        self.temporary, self.root = create_session_directory()
         self.chunks = chunks
         try:
             self.initialize()
@@ -374,7 +384,7 @@ class ReviewBackend:
         return planned
 
     async def predict(self, index, chunk):
-        session = self.root / ('session-' + str(index)); session.mkdir()
+        session = self.root / ('session-' + str(index)); session.mkdir(mode=0o700)
         write_json(self.data / 'diffs.json', dict(chunk))
         write_json(self.data / 'context.json', self.context_for(chunk))
         try:
