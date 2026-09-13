@@ -114,6 +114,13 @@ This pool is local to one review. It does not claim independent quotas for keys
 on one account, coordinate quota cooldown across runners, or prove sustained free
 capacity. Additional providers require explicit fixed profiles and verification.
 
+b.ai sometimes emits its token-rate-limit error as an HTTP 200 assistant message.
+Only the observed exact JSON envelope is recognized as `provider_token_rate_limit`;
+ordinary model text and tool calls are not reclassified. Its text is held only in
+a bounded transient buffer, never copied into evidence. The closed code retires
+the key and advances to the next approved route. Once a bridge fails it rejects
+SDK retries before any further upstream requests and preserves the first failure.
+
 Qwen enters a finalization phase when at most 32K plus 1K safety of input capacity,
 or eight provider requests, remain. The provider then receives only the structured
 submission tool; every original message and complete diff stays in the input.

@@ -16,6 +16,45 @@ from test_opencode import Stream
 
 @unittest.skipUnless(os.environ.get('RYT_OPENCODE_BIN'), 'explicit pinned binary required')
 class BaiTerminalCompatibility(unittest.TestCase):
+    def test_http_200_quota_response_restarts_real_engine_with_reserve_key(self):
+        from ryt.failover import execute_with_pool
+        from ryt.providers import ProviderPool, routes
+        with tempfile.TemporaryDirectory(prefix='ryt-bai-quota-') as temp:
+            root = Path(temp)
+            data = fixture(root)
+            session = root / 'session'
+            session.mkdir()
+            active_calls = []
+            actions = [('ryt_read_file', {'path': 'policy.mjs'}), ('ryt_submit_review', review())]
+            def response(request, timeout):
+                if request.get_header('Authorization') == 'Bearer LIMITED':
+                    delta = {'role': 'assistant', 'content': json.dumps(
+                        {'message': 'Too many tokens, please wait before trying again.'})}
+                else:
+                    self.assertEqual(request.get_header('Authorization'), 'Bearer AVAILABLE')
+                    index = len(active_calls)
+                    active_calls.append(load_json(request.data))
+                    if index < len(actions):
+                        name, arguments = actions[index]
+                        delta = {'role': 'assistant', 'tool_calls': [{'index': 0, 'id': f'quota-{index}',
+                            'type': 'function', 'function': {'name': name, 'arguments': json.dumps(arguments)}}]}
+                    else:
+                        delta = {'role': 'assistant', 'content': 'Review submitted.'}
+                lines = [json.dumps({'model': 'qwen3.8-flash', 'choices': [choice]}) for choice in
+                    [{'index': 0, 'delta': delta, 'finish_reason': None},
+                     {'index': 0, 'delta': {}, 'finish_reason': 'stop'}]]
+                return Stream((''.join('data: ' + line + '\n\n' for line in lines) + 'data: [DONE]\n\n').encode())
+            pool = ProviderPool(routes({'PR_REVIEW_BAI_01': 'LIMITED', 'PR_REVIEW_BAI_02': 'AVAILABLE'}))
+            with patch('ryt.bridge.open_provider', side_effect=response):
+                result, evidence = execute_with_pool(execute_agent, Path(os.environ['RYT_OPENCODE_BIN']),
+                    data, session, pool, lambda text: len(text) // 4, '', 60)
+            self.assertEqual(set(result['coverage']), {'auth.mjs'})
+            self.assertEqual(evidence['route'], 'bai-02')
+            self.assertEqual(evidence['attempts'][0]['failure_code'], 'provider_token_rate_limit')
+            self.assertEqual(evidence['pool_request_count'], 4)
+            self.assertEqual(pool.next().alias, 'bai-02')
+            self.assertNotIn('LIMITED', json.dumps(evidence))
+
     def test_stop_with_tool_calls_still_executes_and_delivers_the_tool_results(self):
         with tempfile.TemporaryDirectory(prefix='ryt-bai-protocol-') as temp:
             root = Path(temp)

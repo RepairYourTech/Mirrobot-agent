@@ -9,6 +9,21 @@ from ryt.providers import profile, routes, ProviderPool
 
 
 class ProviderContracts(unittest.TestCase):
+    def test_bai_http_200_token_limit_envelope_is_a_closed_availability_failure(self):
+        from ryt.diagnostics import safe_failure
+        from ryt.providers import RETRYABLE
+        message = json.dumps({'message': 'Too many tokens, please wait before trying again.'})
+        with ProviderBridge('synthetic', lambda text: 100, profile_id='bai-qwen') as bridge:
+            record = bridge.validate({'model': 'qwen3.8-flash', 'stream': True, 'messages': []})
+            for part in [message[:8], message[8:]]:
+                bridge.observe(record, ('data: ' + json.dumps({'model': 'qwen3.8-flash',
+                    'choices': [{'delta': {'content': part}, 'finish_reason': None}]})).encode())
+            with self.assertRaises(ValueError) as raised:
+                bridge.observe(record, b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}')
+            self.assertEqual(safe_failure(raised.exception), 'provider_token_rate_limit')
+            self.assertIn('provider_token_rate_limit', RETRYABLE)
+            self.assertNotIn('Too many tokens', json.dumps(bridge.records))
+
     def test_qwen_reserves_context_for_submission_without_dropping_input(self):
         import copy
         def payload():
@@ -32,6 +47,19 @@ class ProviderContracts(unittest.TestCase):
             final = payload()
             bridge.validate(final)
             self.assertEqual([t['function']['name'] for t in final['tools']], ['ryt_submit_review'])
+
+    def test_other_messages_and_tool_results_are_not_reclassified_as_provider_rate_limits(self):
+        quota = json.dumps({'message': 'Too many tokens, please wait before trying again.'})
+        for selected, model, text, calls in [
+                ('zai', 'glm-5.3-flash', quota, []),
+                ('bai-qwen', 'qwen3.8-flash', '{"message":"review complete"}', []),
+                ('bai-qwen', 'qwen3.8-flash', quota, [{'index': 0}]),
+                ('bai-qwen', 'qwen3.8-flash', 'x' * 513 + quota, [])]:
+            with ProviderBridge('synthetic', lambda text: 100, profile_id=selected) as bridge:
+                record = bridge.validate({'model': model, 'stream': True, 'messages': []})
+                bridge.observe(record, ('data: ' + json.dumps({'model': model, 'choices': [
+                    {'delta': {'content': text, 'tool_calls': calls}, 'finish_reason': 'stop'}]})).encode())
+                self.assertEqual(record['finish_reasons'], ['stop'])
 
     def test_qwen_uses_remaining_call_allocation_to_reserve_submission_turns(self):
         with ProviderBridge('synthetic', lambda text: 100, profile_id='bai-qwen', max_calls=9) as bridge:

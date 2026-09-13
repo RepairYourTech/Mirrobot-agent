@@ -44,6 +44,7 @@ class ProviderBridge:
             raise ValueError('invalid provider call allocation')
         self.max_calls = max_calls
         self.finalizing = False
+        self._response_states = {}
         self.key = api_key
         self.token = secrets.token_hex(32)
         self.count_tokens = count_tokens
@@ -72,6 +73,9 @@ class ProviderBridge:
                         not hmac.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + bridge.token)):
                     self.send_error(403, 'endpoint or credential rejected')
                     return
+                if bridge.failed.is_set():
+                    self.send_error(503, 'provider route retired; session terminated')
+                    return
                 try:
                     length = int(self.headers.get('Content-Length', '0'))
                     if not 0 < length <= 4 * 1024 * 1024:
@@ -96,8 +100,10 @@ class ProviderBridge:
                         if not record['finish_reasons']:
                             raise BridgeFailure('missing_terminal')
                 except Exception as error:
-                    bridge.error = safe_failure(error)
-                    bridge.failed.set()
+                    with bridge.lock:
+                        if not bridge.failed.is_set():
+                            bridge.error = safe_failure(error)
+                            bridge.failed.set()
                     try:
                         self.send_error(502, 'provider request failed; session terminated')
                     except OSError:
@@ -228,6 +234,8 @@ class ProviderBridge:
             raise BridgeFailure('context_limit')
         prefilled = self.prefill_receipts(payload['messages'])
         with self.lock:
+            if self.failed.is_set():
+                raise BridgeFailure('route_retired')
             if prefilled and self.receipt_path is not None:
                 write_json(self.receipt_path, prefilled)
             if len(self.records) >= self.max_calls:
@@ -242,6 +250,24 @@ class ProviderBridge:
                       'tool_results_sha256': self.receipts(payload['messages']), 'prefilled_files': prefilled}
             self.records.append(record)
         return record
+
+    def observe_availability(self, record, delta, reason):
+        if self.profile.provider != 'bai':
+            return
+        state = self._response_states.setdefault(id(record), {'text': '', 'tools': False})
+        state['tools'] = state['tools'] or bool(delta.get('tool_calls'))
+        content = delta.get('content')
+        if isinstance(content, str) and state['text'] is not None:
+            combined = state['text'] + content
+            state['text'] = combined if len(combined) <= 512 else None
+        if not reason or state['tools'] or state['text'] is None:
+            return
+        try:
+            envelope = load_json(state['text'])
+        except (ValueError, TypeError):
+            return
+        if envelope == {'message': 'Too many tokens, please wait before trying again.'}:
+            raise BridgeFailure('provider_token_rate_limit')
 
     def observe(self, record, line):
         if not line.startswith(b'data:'):
@@ -272,6 +298,7 @@ class ProviderBridge:
             if not self.profile.thinking_enabled and (delta.get('reasoning_content') or delta.get('reasoning')):
                 raise BridgeFailure('unexpected_thinking')
             reason = choice.get('finish_reason')
+            self.observe_availability(record, delta, reason)
             if reason:
                 record['finish_reasons'].append(reason)
                 if reason not in ('stop', 'tool_calls'):
@@ -287,6 +314,7 @@ class ProviderBridge:
         self.server.server_close()
         self.thread.join(timeout=2)
         self.key = ''
+        self._response_states.clear()
         try:
             self.socket_path.unlink(missing_ok=True)
         finally:

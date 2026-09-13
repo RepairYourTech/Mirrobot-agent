@@ -16,7 +16,7 @@ PROFILES = {
     'bai-qwen': Profile('bai', 'qwen3.8-flash', 'https://api.b.ai/v1/chat/completions', 'none', False),
 }
 RETRYABLE = frozenset({'HTTP_429', 'HTTP_500', 'HTTP_502', 'HTTP_503', 'HTTP_504',
-                       'TimeoutError', 'ConnectionError', 'transport_URLError'})
+                       'TimeoutError', 'ConnectionError', 'transport_URLError', 'provider_token_rate_limit'})
 
 
 def profile(name):
