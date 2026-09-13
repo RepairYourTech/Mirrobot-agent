@@ -43,6 +43,7 @@ class ProviderBridge:
         if type(max_calls) is not int or not 1 <= max_calls <= 64:
             raise ValueError('invalid provider call allocation')
         self.max_calls = max_calls
+        self.finalizing = False
         self.key = api_key
         self.token = secrets.token_hex(32)
         self.count_tokens = count_tokens
@@ -173,6 +174,22 @@ class ProviderBridge:
                         for path, diff in actual['diffs'].items()}
         raise ValueError('complete initial input packet missing from provider request')
 
+    def budget_notice(self, payload, remaining):
+        calls = max(0, self.max_calls - len(self.records) - 1)
+        if self.profile.provider == 'bai' and (remaining <= OUTPUT_TOKENS + 1024 or calls <= 8):
+            self.finalizing = True
+        notice = f' After this request, at most {calls} provider requests remain in this session allocation.'
+        if self.finalizing:
+            if isinstance(payload.get('tools'), list):
+                payload['tools'] = [tool for tool in payload['tools']
+                    if tool.get('function', {}).get('name') == 'ryt_submit_review']
+            notice += (' FINALIZATION PHASE: investigation tools are now closed to reserve context for the '
+                'structured result and its receipt. All existing messages and complete assigned diffs remain. '
+                'Use ryt_submit_review with every assigned file disposition and supported findings, then finish. '
+                'Disclose unresolved uncertainty and limitations honestly; never invent a clean result or '
+                'claim unfinished inspection completed. A chat-only response does not complete this review.')
+        return notice
+
     def validate(self, payload):
         if payload.get('model') != self.profile.model or not isinstance(payload.get('messages'), list):
             raise ValueError('wrong model or messages')
@@ -195,12 +212,13 @@ class ProviderBridge:
         # It is inserted into this request only; OpenCode retains its full original conversation.
         before_notice = self.count_tokens(json.dumps(payload))
         remaining = CONTEXT_TOKENS - OUTPUT_TOKENS - 1024 - before_notice
+        finalization = self.budget_notice(payload, remaining)
         payload['messages'].insert(0, {'role':'system', 'content':
             f'RYT SESSION CONTEXT: approximately {remaining} input tokens remain after the full '
             '32K output reservation. Investigate only this session assigned files and relevant '
             'cross-file contracts. If fewer than 20000 remain, avoid redundant broad reads and '
             'finalize supported findings and file dispositions. Never invent a clean result '
-            'or claim unfinished inspection completed. Do not ask for repeated full repository dumps.'})
+            'or claim unfinished inspection completed. Do not ask for repeated full repository dumps.' + finalization})
         # Bound context without secretly clipping/compacting the model's inputs.
         tokens = self.count_tokens(json.dumps(payload))
         if tokens > CONTEXT_TOKENS - OUTPUT_TOKENS - 1024:
@@ -217,6 +235,7 @@ class ProviderBridge:
             record = {'model': payload['model'], 'provider': self.profile.provider,
                       'reasoning_effort': self.profile.reasoning_effort,
                       'thinking_enabled': self.profile.thinking_enabled,
+                      'finalization_only': self.finalizing,
                       'request_sha256': sha256(json.dumps(payload, sort_keys=True)),
                       'estimated_input_tokens': tokens,
                       'remaining_input_tokens': CONTEXT_TOKENS - OUTPUT_TOKENS - 1024 - tokens, 'max_output_tokens': payload['max_tokens'], 'finish_reasons': [], 'usage': {}, 'reported_models': [],

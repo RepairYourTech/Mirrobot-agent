@@ -9,6 +9,39 @@ from ryt.providers import profile, routes, ProviderPool
 
 
 class ProviderContracts(unittest.TestCase):
+    def test_qwen_reserves_context_for_submission_without_dropping_input(self):
+        import copy
+        def payload():
+            return {'model': 'qwen3.8-flash', 'stream': True,
+                'messages': [{'role': 'user', 'content': 'complete immutable review packet'}],
+                'tools': [{'type': 'function', 'function': {'name': name}} for name in
+                          ('ryt_read_file', 'ryt_search', 'ryt_submit_review')]}
+        with ProviderBridge('synthetic', lambda text: 40000, profile_id='bai-qwen') as bridge:
+            initial = payload()
+            bridge.validate(initial)
+            self.assertEqual(len(initial['tools']), 3)
+            bridge.count_tokens = lambda text: 70000
+            full = payload()
+            messages = copy.deepcopy(full['messages'])
+            bridge.validate(full)
+            self.assertEqual([t['function']['name'] for t in full['tools']], ['ryt_submit_review'])
+            self.assertEqual(full['messages'][1:], messages)
+            self.assertIn('FINALIZATION', full['messages'][0]['content'])
+            # A smaller subsequent packet must not reopen investigation after finalization.
+            bridge.count_tokens = lambda text: 40000
+            final = payload()
+            bridge.validate(final)
+            self.assertEqual([t['function']['name'] for t in final['tools']], ['ryt_submit_review'])
+
+    def test_qwen_uses_remaining_call_allocation_to_reserve_submission_turns(self):
+        with ProviderBridge('synthetic', lambda text: 100, profile_id='bai-qwen', max_calls=9) as bridge:
+            payload = {'model': 'qwen3.8-flash', 'stream': True, 'messages': [],
+                'tools': [{'type': 'function', 'function': {'name': name}} for name in
+                          ('ryt_read_file', 'ryt_submit_review')]}
+            bridge.validate(payload)
+            self.assertEqual([t['function']['name'] for t in payload['tools']], ['ryt_submit_review'])
+            self.assertIn('8 provider requests remain', payload['messages'][0]['content'])
+
     def test_only_trusted_profiles_and_deduplicated_credentials_are_admitted(self):
         with self.assertRaises(ValueError):
             profile('https://attacker.invalid')

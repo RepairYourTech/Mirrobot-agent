@@ -48,7 +48,8 @@ class BaiTerminalCompatibility(unittest.TestCase):
 
             with patch('ryt.bridge.open_provider', side_effect=response):
                 result, evidence = execute_agent(Path(os.environ['RYT_OPENCODE_BIN']), data, session,
-                    'SYNTHETIC-CREDENTIAL', lambda text: len(text) // 4, timeout_seconds=30, profile_id='bai-qwen', max_tools=4)
+                    'SYNTHETIC-CREDENTIAL', lambda text: len(text) // 4, timeout_seconds=30,
+                    profile_id='bai-qwen', max_tools=4, max_calls=10)
             self.assertEqual(len(requests), 3)
             self.assertEqual([event['tool'] for event in evidence['tool_events']], ['read_file', 'submit_review'])
             self.assertEqual(set(result['coverage']), {'auth.mjs'})
@@ -56,6 +57,9 @@ class BaiTerminalCompatibility(unittest.TestCase):
             self.assertTrue(any(message['role'] == 'tool' for message in requests[-1]['messages']))
             self.assertEqual(evidence['model'], 'openai/qwen3.8-flash')
             self.assertIs(evidence['thinking_enabled'], False)
+            self.assertIn('ryt_read_file', [tool['function']['name'] for tool in requests[0]['tools']])
+            self.assertEqual([tool['function']['name'] for tool in requests[1]['tools']], ['ryt_submit_review'])
+            self.assertEqual([request['finalization_only'] for request in evidence['provider_requests']], [False, True, True])
 
 
 if __name__ == '__main__':

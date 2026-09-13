@@ -76,7 +76,7 @@ def install_opencode(folder):
     return binary
 
 
-def agent_config(url, token, profile_id='zai', max_tools=384):
+def agent_config(url, token, profile_id='zai', max_tools=384, max_calls=64):
     selected = profile(profile_id)
     model = 'openai/' + selected.model
     return {
@@ -92,7 +92,7 @@ def agent_config(url, token, profile_id='zai', max_tools=384):
                 'options': {'reasoningEffort': 'max'} if selected.thinking_enabled else {}}}}},
         'permission': {'*': 'deny', 'ryt_*': 'allow'},
         'agent': {'ryt-review': {'mode': 'primary', 'description': 'Read-only adversarial reviewer',
-                     'prompt': '{file:/work/system.txt}', 'steps': 96,
+                     'prompt': '{file:/work/system.txt}', 'steps': max_calls,
                      'permission': {'*': 'deny', 'ryt_*': 'allow'}},
                   'title': {'disable': True}, 'summary': {'disable': True}},
         'mcp': {'ryt': {'type': 'local', 'command': ['python3', '-I', '/engine/ryt/mcp_entry.py', '/data', '/evidence', str(max_tools)],
@@ -227,7 +227,7 @@ def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_pol
     bridge_dir = session_root / 'bridge'; bridge_dir.mkdir(mode=0o700)
     bridge_socket = bridge_dir / 'provider.sock'
     with ProviderBridge(api_key, count_tokens, socket_path=bridge_socket, profile_id=profile_id, max_calls=max_calls) as bridge:
-        write_json(work / 'opencode.json', agent_config(bridge.url, bridge.token, profile_id, max_tools))
+        write_json(work / 'opencode.json', agent_config(bridge.url, bridge.token, profile_id, max_tools, max_calls))
         context = load_json(read_text(data / 'context.json', 4 * 1024 * 1024))
         packet = initial_packet(context, load_json(read_text(data / 'diffs.json', 16 * 1024 * 1024)))
         request_path = session_root / 'request.txt'

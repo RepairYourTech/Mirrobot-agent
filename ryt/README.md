@@ -113,3 +113,11 @@ not independently measurable.
 This pool is local to one review. It does not claim independent quotas for keys
 on one account, coordinate quota cooldown across runners, or prove sustained free
 capacity. Additional providers require explicit fixed profiles and verification.
+
+Qwen enters a finalization phase when at most 32K plus 1K safety of input capacity,
+or eight provider requests, remain. The provider then receives only the structured
+submission tool; every original message and complete diff stays in the input.
+The agent receives the remaining call allocation, and its step budget matches the
+host call budget. This reserves room for a result and its provider receipt instead
+of consuming all context on repeated searches. Limitations must be disclosed;
+missing submission, coverage or receipts still fails the review.
