@@ -4,7 +4,9 @@ import urllib.error
 CODES = frozenset({
     'request_size', 'output_limit', 'context_limit', 'call_limit',
     'response_size', 'missing_terminal', 'stream_json', 'stream_error',
-    'reported_model', 'finish_length', 'finish_filter', 'finish_other',
+    'reported_model', 'finish_length', 'finish_filter', 'finish_other', 'provider_redirect', 'unexpected_thinking',
+    'provider_token_rate_limit',
+    'route_retired',
 })
 
 

@@ -16,6 +16,8 @@ from ryt.context_packet import initial_packet
 from ryt.history import review_history
 from ryt.hygiene import create_session_directory, secure_active_session, touch_session
 from ryt.planning import plan_sessions, INITIAL_INPUT_LIMIT
+from ryt.providers import profile, routes, ProviderPool
+from ryt.failover import execute_with_pool
 from ryt.tool_server import TOOLS
 from ryt.common import load_json, read_text, sha256, write_json
 from ryt.probe import base_sandbox
@@ -74,24 +76,26 @@ def install_opencode(folder):
     return binary
 
 
-def agent_config(url, token):
+def agent_config(url, token, profile_id='zai', max_tools=384, max_calls=64):
+    selected = profile(profile_id)
+    model = 'openai/' + selected.model
     return {
         '$schema': 'https://opencode.ai/config.json',
-        'model': MODEL, 'small_model': MODEL, 'autoupdate': False, 'share': 'disabled',
+        'model': model, 'small_model': model, 'autoupdate': False, 'share': 'disabled',
         'enabled_providers': ['openai'], 'plugin': [], 'instructions': [],
         'compaction': {'auto': False, 'prune': False},
         'tool_output': {'max_bytes': 51200, 'max_lines': 2000},
-        'provider': {'openai': {'npm': '@ai-sdk/openai-compatible', 'name': 'RYT fixed Z.AI bridge',
+        'provider': {'openai': {'npm': '@ai-sdk/openai-compatible', 'name': 'RYT fixed provider bridge',
             'options': {'baseURL': url, 'apiKey': token, 'timeout': 600000, 'maxRetries': 0},
-            'models': {'glm-5.3-flash': {'name': 'GLM-5.3-Flash', 'tool_call': True,
+            'models': {selected.model: {'name': selected.model, 'tool_call': True,
                 'limit': {'context': LOCK['context_tokens'], 'output': LOCK['output_tokens']},
-                'options': {'reasoningEffort': 'max'}}}}},
+                'options': {'reasoningEffort': 'max'} if selected.thinking_enabled else {}}}}},
         'permission': {'*': 'deny', 'ryt_*': 'allow'},
         'agent': {'ryt-review': {'mode': 'primary', 'description': 'Read-only adversarial reviewer',
-                     'prompt': '{file:/work/system.txt}', 'steps': 96,
+                     'prompt': '{file:/work/system.txt}', 'steps': max_calls,
                      'permission': {'*': 'deny', 'ryt_*': 'allow'}},
                   'title': {'disable': True}, 'summary': {'disable': True}},
-        'mcp': {'ryt': {'type': 'local', 'command': ['python3', '-I', '/engine/ryt/mcp_entry.py', '/data', '/evidence'],
+        'mcp': {'ryt': {'type': 'local', 'command': ['python3', '-I', '/engine/ryt/mcp_entry.py', '/data', '/evidence', str(max_tools)],
                         'enabled': True, 'timeout': 30000}},
     }
 
@@ -170,7 +174,8 @@ Do not return the review only as chat text: submit through the structured tool; 
 '''
 
 
-def sandbox_command(binary, data, work, output, bridge_socket):
+def sandbox_command(binary, data, work, output, bridge_socket, profile_id='zai'):
+    selected = profile(profile_id)
     command = base_sandbox()
     # The engine gets its own network namespace. A trusted relay inside that
     # namespace exposes only sandbox-local loopback and forwards exclusively to
@@ -191,7 +196,7 @@ def sandbox_command(binary, data, work, output, bridge_socket):
         command += ['--setenv', key, value]
     return command + ['--', 'python3', '-I', '/engine/ryt/bridge_proxy.py',
                       '/bridge/' + bridge_socket.name, '--', '/opencode', 'run', '--pure', '--format', 'json',
-                      '--model', MODEL, '--agent', 'ryt-review', '--title', 'RYT adversarial review',
+                      '--model', 'openai/' + selected.model, '--agent', 'ryt-review', '--title', 'RYT adversarial review',
                       'Review this exact PR chunk. Batch independent context and diff reads. Inspect every diff page.']
 
 
@@ -205,7 +210,9 @@ def session_budget(deadline, remaining_chunks, now=None):
     return granted
 
 
-def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_policy="", timeout_seconds=None):
+def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_policy="", timeout_seconds=None,
+                  *, profile_id='zai', max_calls=64, max_tools=384):
+    selected = profile(profile_id)
     session_root = secure_active_session(session_root)
     work = session_root / 'work'; output = session_root / 'evidence'
     work.mkdir(mode=0o700); output.mkdir(mode=0o700)
@@ -219,15 +226,16 @@ def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_pol
         raise ValueError('invalid session allocation')
     bridge_dir = session_root / 'bridge'; bridge_dir.mkdir(mode=0o700)
     bridge_socket = bridge_dir / 'provider.sock'
-    with ProviderBridge(api_key, count_tokens, socket_path=bridge_socket) as bridge:
-        write_json(work / 'opencode.json', agent_config(bridge.url, bridge.token))
+    with ProviderBridge(api_key, count_tokens, socket_path=bridge_socket, profile_id=profile_id, max_calls=max_calls,
+                        submission_path=output / 'result.json') as bridge:
+        write_json(work / 'opencode.json', agent_config(bridge.url, bridge.token, profile_id, max_tools, max_calls))
         context = load_json(read_text(data / 'context.json', 4 * 1024 * 1024))
         packet = initial_packet(context, load_json(read_text(data / 'diffs.json', 16 * 1024 * 1024)))
         request_path = session_root / 'request.txt'
         request_path.write_text(bridge.input_packet(packet, output / 'prefill.json'))
         last_progress = 0
         with stdout_path.open('wb') as stdout, stderr_path.open('wb') as stderr, request_path.open('rb') as stdin:
-            process = subprocess.Popen(sandbox_command(binary, data, work, output, bridge_socket),
+            process = subprocess.Popen(sandbox_command(binary, data, work, output, bridge_socket, profile_id),
                 stdin=stdin, stdout=stdout, stderr=stderr,
                 env={'PATH': '/usr/bin:/bin'}, start_new_session=True)
             try:
@@ -290,7 +298,9 @@ def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_pol
             if prefills[0][path] != {'sha256': coverage['sha256'], 'lines': coverage['lines']}:
                 raise ValueError('model input and reported coverage differ')
         telemetry = {'backend': 'mirrobot-opencode', 'upstream': LOCK['upstream'],
-            'opencode_version': LOCK['opencode']['version'], 'model': MODEL, 'reasoning_effort': 'max',
+            'opencode_version': LOCK['opencode']['version'], 'model': 'openai/' + selected.model,
+            'provider': selected.provider, 'reasoning_effort': selected.reasoning_effort,
+            'thinking_enabled': selected.thinking_enabled,
             'elapsed_seconds': round(time.monotonic()-started, 3), 'budget_seconds': timeout_seconds, 'provider_requests': bridge.records,
             'initial_input_limit': INITIAL_INPUT_LIMIT, 'tool_events': tools, 'dispositions': result['files'], 'delivery': result['coverage']}
         write_json(session_root / 'telemetry.json', telemetry)
@@ -388,8 +398,10 @@ class ReviewBackend:
         write_json(self.data / 'diffs.json', dict(chunk))
         write_json(self.data / 'context.json', self.context_for(chunk))
         try:
-            result, telemetry = await asyncio.to_thread(execute_agent, self.binary, self.data, session,
-                os.environ.get('OPENAI_KEY', ''), self.reviewer.token_handler.count_tokens,
+            if not hasattr(self, 'provider_pool'):
+                self.provider_pool = ProviderPool(routes(os.environ))
+            result, telemetry = await asyncio.to_thread(execute_with_pool, execute_agent,
+                self.binary, self.data, session, self.provider_pool, self.reviewer.token_handler.count_tokens,
                 self.reviewer.vars.get('extra_instructions', ''),
                 session_budget(self.deadline, len(self.chunks)-index))
         except Exception as error:
@@ -397,7 +409,7 @@ class ReviewBackend:
             # not raw provider responses, prompts, tool arguments or credentials.
             self.evidence.setdefault('mirrobot_failures', []).append({
                 'chunk': index + 1, 'type': type(error).__name__,
-                'code': str(error) if isinstance(error, ValueError) else 'backend execution failure',
+                'code': 'backend execution failure',
                 'progress': load_json(read_text(session / 'progress.json')) if (session / 'progress.json').exists() else None})
             raise
         expected = {p: sha256(text) for p, text in chunk}
@@ -410,4 +422,6 @@ class ReviewBackend:
         return json.dumps({'review': result['review']})
 
     def close(self):
+        if hasattr(self, 'provider_pool'):
+            self.provider_pool = None
         self.temporary.cleanup()
