@@ -23,6 +23,16 @@ def integer(value, minimum=0, maximum=10000000):
     return value
 
 
+def finding_line(issue, key, index, minimum):
+    try:
+        return integer(issue.get(key), minimum)
+    except ValueError:
+        field = f'review.key_issues_to_review[{index}].{key}'
+        raise SubmissionValidationError('finding_line_invalid', field,
+            f'{field} is required and must be a positive integer no greater than 10000000; '
+            'end_line must be at least start_line. Preserve the finding and correct this field.') from None
+
+
 def schema(properties, required=()):
     return {'type': 'object', 'properties': properties, 'required': list(required), 'additionalProperties': False}
 
@@ -75,7 +85,7 @@ class RepositoryTools:
         self.events = []
         self.fatal = False
         self.submitted = False
-        self.findings_attempted = False
+        self.finding_count_attempted = 0
 
     def page(self, text, offset):
         lines = text.splitlines(keepends=True)
@@ -197,9 +207,10 @@ class RepositoryTools:
         findings = review.get('key_issues_to_review') if isinstance(review, dict) else None
         if not isinstance(findings, list):
             raise ValueError('missing structured findings array')
-        if not findings and self.findings_attempted:
+        if len(findings) < self.finding_count_attempted:
             raise SubmissionValidationError('rejected_findings_discarded', 'review.key_issues_to_review',
-                'empty report cannot discard rejected findings; correct the finding fields and resubmit')
+                f'report cannot discard rejected findings: submitted {len(findings)}, '
+                f'previously attempted {self.finding_count_attempted}; correct the finding fields and resubmit')
         for index, issue in enumerate(findings):
             if issue.get('relevant_file') not in self.diffs:
                 raise ValueError('finding must anchor to a changed file in this chunk')
@@ -208,8 +219,8 @@ class RepositoryTools:
                     field = f'review.key_issues_to_review[{index}].{key}'
                     raise SubmissionValidationError('finding_text_required', field,
                         f'{field} must be a nonempty string; preserve the finding and correct this field')
-            start = integer(issue.get('start_line'), 1)
-            integer(issue.get('end_line'), start)
+            start = finding_line(issue, 'start_line', index, 1)
+            finding_line(issue, 'end_line', index, start)
         for key in ('security_concerns', 'risk_level', 'merge_recommendation'):
             if not isinstance(review.get(key), str) or not review[key].strip():
                 raise ValueError('missing required review section')
@@ -226,7 +237,7 @@ class RepositoryTools:
             review = args.get('review')
             findings = review.get('key_issues_to_review') if isinstance(review, dict) else None
             if isinstance(findings, list) and findings:
-                self.findings_attempted = True
+                self.finding_count_attempted = max(self.finding_count_attempted, len(findings))
         spec = next((tool['inputSchema'] for tool in TOOLS if tool['name'] == name), None)
         if (spec is None or not isinstance(args, dict) or set(args)-set(spec['properties']) or
                 set(spec['required'])-set(args)):

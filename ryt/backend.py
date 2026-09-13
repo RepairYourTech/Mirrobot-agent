@@ -171,7 +171,9 @@ Finding classification and ownership:
   or assert the wrong behavior; put optional hardening suggestions in the summary.
 Use an empty findings list only after inspection supports it. The publisher is outside your process.
 If a finding submission is rejected, preserve its findings and correct the named schema fields.
-An empty report cannot replace rejected findings. Never delete defects just to make a tool call pass.
+A smaller finding list cannot replace rejected findings. Never delete defects just to make a tool call pass.
+Never pad the list with invented or duplicate findings. If further inspection rules out a candidate after
+a rejected submission, disclose that limitation and leave the session incomplete for a fresh review.
 Do not return the review only as chat text: submit through the structured tool; no submit means failure.
 '''
 
