@@ -98,6 +98,11 @@ class BaiTerminalCompatibility(unittest.TestCase):
             self.assertIs(evidence['thinking_enabled'], False)
             self.assertIn('ryt_read_file', [tool['function']['name'] for tool in requests[0]['tools']])
             self.assertEqual([tool['function']['name'] for tool in requests[1]['tools']], ['ryt_submit_review'])
+            self.assertEqual(requests[1]['tool_choice'],
+                {'type': 'function', 'function': {'name': 'ryt_submit_review'}})
+            self.assertEqual(requests[2]['tool_choice'], 'none')
+            self.assertEqual(requests[2]['tools'], [])
+            self.assertEqual(requests[0]['tool_choice'], 'auto')
             self.assertEqual([request['finalization_only'] for request in evidence['provider_requests']], [False, True, True])
 
 

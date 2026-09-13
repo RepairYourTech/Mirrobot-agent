@@ -123,7 +123,11 @@ SDK retries before any further upstream requests and preserves the first failure
 
 Qwen enters a finalization phase when at most 32K plus 1K safety of input capacity,
 or eight provider requests, remain. The provider then receives only the structured
-submission tool; every original message and complete diff stays in the input.
+submission tool with explicit function choice; every original message and complete
+diff stays in the input. Merely hiding inspection schemas does not reliably stop
+Qwen from calling remembered tools. After the trusted MCP server accepts the
+structured result, tool choice becomes `none` so the model can acknowledge its
+receipt without submitting again. No model text can substitute for that acceptance.
 The agent receives the remaining call allocation, and its step budget matches the
 host call budget. This reserves room for a result and its provider receipt instead
 of consuming all context on repeated searches. Limitations must be disclosed;

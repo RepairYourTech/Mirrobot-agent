@@ -36,7 +36,8 @@ class ThreadingUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
 
 
 class ProviderBridge:
-    def __init__(self, api_key, count_tokens, *, endpoint=None, socket_path=None, profile_id='zai', max_calls=64):
+    def __init__(self, api_key, count_tokens, *, endpoint=None, socket_path=None, profile_id='zai', max_calls=64,
+                 submission_path=None):
         self.profile = profile(profile_id)
         if endpoint is not None and endpoint != self.profile.endpoint:
             raise ValueError('provider endpoint is immutable')
@@ -44,6 +45,7 @@ class ProviderBridge:
             raise ValueError('invalid provider call allocation')
         self.max_calls = max_calls
         self.finalizing = False
+        self.submission_path = submission_path
         self._response_states = {}
         self.key = api_key
         self.token = secrets.token_hex(32)
@@ -186,14 +188,20 @@ class ProviderBridge:
             self.finalizing = True
         notice = f' After this request, at most {calls} provider requests remain in this session allocation.'
         if self.finalizing:
+            # Only the trusted MCP server writes this file, after all submission checks.
+            submitted = self.submission_path is not None and self.submission_path.is_file()
             if isinstance(payload.get('tools'), list):
                 payload['tools'] = [tool for tool in payload['tools']
-                    if tool.get('function', {}).get('name') == 'ryt_submit_review']
+                    if not submitted and tool.get('function', {}).get('name') == 'ryt_submit_review']
+                payload['tool_choice'] = ('none' if submitted else
+                    {'type': 'function', 'function': {'name': 'ryt_submit_review'}})
             notice += (' FINALIZATION PHASE: investigation tools are now closed to reserve context for the '
                 'structured result and its receipt. All existing messages and complete assigned diffs remain. '
                 'Use ryt_submit_review with every assigned file disposition and supported findings, then finish. '
                 'Disclose unresolved uncertainty and limitations honestly; never invent a clean result or '
                 'claim unfinished inspection completed. A chat-only response does not complete this review.')
+            if submitted:
+                notice += ' The trusted submission was accepted. Read its tool receipt and finish with a brief acknowledgment.'
         return notice
 
     def validate(self, payload):

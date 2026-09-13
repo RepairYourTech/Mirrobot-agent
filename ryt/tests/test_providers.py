@@ -40,6 +40,7 @@ class ProviderContracts(unittest.TestCase):
             messages = copy.deepcopy(full['messages'])
             bridge.validate(full)
             self.assertEqual([t['function']['name'] for t in full['tools']], ['ryt_submit_review'])
+            self.assertEqual(full['tool_choice'], {'type': 'function', 'function': {'name': 'ryt_submit_review'}})
             self.assertEqual(full['messages'][1:], messages)
             self.assertIn('FINALIZATION', full['messages'][0]['content'])
             # A smaller subsequent packet must not reopen investigation after finalization.
@@ -47,6 +48,7 @@ class ProviderContracts(unittest.TestCase):
             final = payload()
             bridge.validate(final)
             self.assertEqual([t['function']['name'] for t in final['tools']], ['ryt_submit_review'])
+            self.assertEqual(final['tool_choice'], full['tool_choice'])
 
     def test_other_messages_and_tool_results_are_not_reclassified_as_provider_rate_limits(self):
         quota = json.dumps({'message': 'Too many tokens, please wait before trying again.'})

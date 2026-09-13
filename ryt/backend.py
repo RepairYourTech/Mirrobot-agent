@@ -226,7 +226,8 @@ def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_pol
         raise ValueError('invalid session allocation')
     bridge_dir = session_root / 'bridge'; bridge_dir.mkdir(mode=0o700)
     bridge_socket = bridge_dir / 'provider.sock'
-    with ProviderBridge(api_key, count_tokens, socket_path=bridge_socket, profile_id=profile_id, max_calls=max_calls) as bridge:
+    with ProviderBridge(api_key, count_tokens, socket_path=bridge_socket, profile_id=profile_id, max_calls=max_calls,
+                        submission_path=output / 'result.json') as bridge:
         write_json(work / 'opencode.json', agent_config(bridge.url, bridge.token, profile_id, max_tools, max_calls))
         context = load_json(read_text(data / 'context.json', 4 * 1024 * 1024))
         packet = initial_packet(context, load_json(read_text(data / 'diffs.json', 16 * 1024 * 1024)))
