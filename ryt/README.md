@@ -57,6 +57,13 @@ Run tests with `python3 -m unittest discover -s ryt/tests -v`. Set
 OpenCode/MCP/sandbox integration test; that test uses a synthetic provider, not an
 API secret. The separate deployment canary verifies the real model endpoint.
 
+A rejected nonempty finding submission cannot be replaced by an empty report in
+the same session. Correcting the finding fields remains allowed. This deliberately
+fails closed if the model abandons every candidate after a submission error; a
+fresh review is required if subsequent inspection rules out every candidate.
+Finding text validation records only a trusted field path and error code in tool
+evidence. Runtime coverage is separate from benchmark defect-detection quality.
+
 See PLAN.md for promotion gates and rollback. RYT source, diffs, prompts containing
 private context, API keys and raw model session logs must never be committed here.
 
