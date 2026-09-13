@@ -16,6 +16,56 @@ from test_opencode import Stream
 
 @unittest.skipUnless(os.environ.get('RYT_OPENCODE_BIN'), 'explicit pinned binary required')
 class BaiTerminalCompatibility(unittest.TestCase):
+    def test_rejected_findings_survive_real_engine_finalization(self):
+        import copy
+        with tempfile.TemporaryDirectory(prefix='ryt-bai-submission-') as temp:
+            root = Path(temp)
+            data = fixture(root)
+            session = root / 'session'
+            session.mkdir()
+            corrected = review()
+            corrected['review']['key_issues_to_review'] = [{
+                'relevant_file': 'auth.mjs', 'issue_header': 'Await authorization',
+                'issue_content': '[P1] The Promise guard permits an unauthorized query.',
+                'start_line': 1, 'end_line': 1,
+            }]
+            malformed = copy.deepcopy(corrected)
+            malformed['review']['key_issues_to_review'][0]['issue_content'] = ' '
+            actions = [('ryt_read_file', {'path': 'policy.mjs'}),
+                       ('ryt_submit_review', malformed), ('ryt_submit_review', review()),
+                       ('ryt_submit_review', corrected)]
+            requests = []
+
+            def response(request, timeout):
+                payload = load_json(request.data)
+                self.assertIs(payload['enable_thinking'], False)
+                index = len(requests)
+                requests.append(payload)
+                if index < len(actions):
+                    name, arguments = actions[index]
+                    delta = {'role': 'assistant', 'tool_calls': [{'index': 0, 'id': f'integrity-{index}',
+                        'type': 'function', 'function': {'name': name, 'arguments': json.dumps(arguments)}}]}
+                else:
+                    delta = {'role': 'assistant', 'content': 'Review submitted.'}
+                chunks = [json.dumps({'model': 'qwen3.8-flash', 'choices': [choice]}) for choice in
+                    [{'index': 0, 'delta': delta, 'finish_reason': None},
+                     {'index': 0, 'delta': {}, 'finish_reason': 'stop'}]]
+                return Stream((''.join('data: ' + chunk + '\n\n' for chunk in chunks)
+                    + 'data: [DONE]\n\n').encode())
+
+            with patch('ryt.bridge.open_provider', side_effect=response):
+                result, evidence = execute_agent(Path(os.environ['RYT_OPENCODE_BIN']), data, session,
+                    'SYNTHETIC-CREDENTIAL', lambda text: len(text) // 4, timeout_seconds=30,
+                    profile_id='bai-qwen', max_tools=8, max_calls=10)
+            self.assertEqual(result['review']['key_issues_to_review'], corrected['review']['key_issues_to_review'])
+            submissions = [event for event in evidence['tool_events'] if event['tool'] == 'submit_review']
+            self.assertEqual([event['status'] for event in submissions], ['failed', 'failed', 'success'])
+            self.assertEqual(submissions[0]['validation']['field'], 'review.key_issues_to_review[0].issue_content')
+            self.assertEqual(submissions[1]['validation']['code'], 'rejected_findings_discarded')
+            tool_results = json.dumps([message for message in requests[3]['messages'] if message['role'] == 'tool'])
+            self.assertIn('cannot discard rejected findings', tool_results)
+            self.assertEqual(len(requests), 5)
+
     def test_http_200_quota_response_restarts_real_engine_with_reserve_key(self):
         from ryt.failover import execute_with_pool
         from ryt.providers import ProviderPool, routes

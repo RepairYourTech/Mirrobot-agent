@@ -10,6 +10,13 @@ PAGE_BYTES = 8000
 OUTPUT_BYTES = 32768
 
 
+class SubmissionValidationError(ValueError):
+    """Only trusted field names and codes may enter published tool diagnostics."""
+    def __init__(self, code, field, message):
+        super().__init__(message)
+        self.diagnostic = {'code': code, 'field': field}
+
+
 def integer(value, minimum=0, maximum=10000000):
     if type(value) is not int or not minimum <= value <= maximum:
         raise ValueError('integer outside allowed range')
@@ -68,6 +75,7 @@ class RepositoryTools:
         self.events = []
         self.fatal = False
         self.submitted = False
+        self.findings_attempted = False
 
     def page(self, text, offset):
         lines = text.splitlines(keepends=True)
@@ -189,12 +197,17 @@ class RepositoryTools:
         findings = review.get('key_issues_to_review') if isinstance(review, dict) else None
         if not isinstance(findings, list):
             raise ValueError('missing structured findings array')
-        for issue in findings:
+        if not findings and self.findings_attempted:
+            raise SubmissionValidationError('rejected_findings_discarded', 'review.key_issues_to_review',
+                'empty report cannot discard rejected findings; correct the finding fields and resubmit')
+        for index, issue in enumerate(findings):
             if issue.get('relevant_file') not in self.diffs:
                 raise ValueError('finding must anchor to a changed file in this chunk')
             for key in ('issue_header', 'issue_content'):
                 if not isinstance(issue.get(key), str) or not issue[key].strip():
-                    raise ValueError('finding header/explanation required')
+                    field = f'review.key_issues_to_review[{index}].{key}'
+                    raise SubmissionValidationError('finding_text_required', field,
+                        f'{field} must be a nonempty string; preserve the finding and correct this field')
             start = integer(issue.get('start_line'), 1)
             integer(issue.get('end_line'), start)
         for key in ('security_concerns', 'risk_level', 'merge_recommendation'):
@@ -209,6 +222,11 @@ class RepositoryTools:
                 'notice': 'Finish the session; trusted publisher still must verify current head/base and GitHub readback.'}
 
     def call(self, name, args):
+        if name == 'submit_review' and isinstance(args, dict):
+            review = args.get('review')
+            findings = review.get('key_issues_to_review') if isinstance(review, dict) else None
+            if isinstance(findings, list) and findings:
+                self.findings_attempted = True
         spec = next((tool['inputSchema'] for tool in TOOLS if tool['name'] == name), None)
         if (spec is None or not isinstance(args, dict) or set(args)-set(spec['properties']) or
                 set(spec['required'])-set(args)):
@@ -225,6 +243,9 @@ class RepositoryTools:
             event.update(status='success', output_sha256=sha256(json.dumps(result, sort_keys=True)),
                          offset=result.get('offset'), end=result.get('end'))
             return result
+        except SubmissionValidationError as error:
+            event['validation'] = error.diagnostic
+            raise
         except (ValueError, FileNotFoundError, UnicodeDecodeError):
             raise
         except Exception:
