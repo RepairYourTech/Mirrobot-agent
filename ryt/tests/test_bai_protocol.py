@@ -28,11 +28,20 @@ class BaiTerminalCompatibility(unittest.TestCase):
                 'relevant_file': 'auth.mjs', 'issue_header': 'Await authorization',
                 'issue_content': '[P1] The Promise guard permits an unauthorized query.',
                 'start_line': 1, 'end_line': 1,
+            }, {
+                'relevant_file': 'auth.mjs', 'issue_header': 'Await the second authorization decision',
+                'issue_content': '[P1] A second Promise guard also permits an unauthorized query.',
+                'start_line': 2, 'end_line': 2,
             }]
             malformed = copy.deepcopy(corrected)
             malformed['review']['key_issues_to_review'][0]['issue_content'] = ' '
+            missing_line = copy.deepcopy(corrected)
+            del missing_line['review']['key_issues_to_review'][1]['end_line']
+            partial = copy.deepcopy(corrected)
+            partial['review']['key_issues_to_review'] = partial['review']['key_issues_to_review'][:1]
             actions = [('ryt_read_file', {'path': 'policy.mjs'}),
-                       ('ryt_submit_review', malformed), ('ryt_submit_review', review()),
+                       ('ryt_submit_review', malformed), ('ryt_submit_review', missing_line),
+                       ('ryt_submit_review', partial), ('ryt_submit_review', review()),
                        ('ryt_submit_review', corrected)]
             requests = []
 
@@ -59,12 +68,14 @@ class BaiTerminalCompatibility(unittest.TestCase):
                     profile_id='bai-qwen', max_tools=8, max_calls=10)
             self.assertEqual(result['review']['key_issues_to_review'], corrected['review']['key_issues_to_review'])
             submissions = [event for event in evidence['tool_events'] if event['tool'] == 'submit_review']
-            self.assertEqual([event['status'] for event in submissions], ['failed', 'failed', 'success'])
+            self.assertEqual([event['status'] for event in submissions], ['failed'] * 4 + ['success'])
             self.assertEqual(submissions[0]['validation']['field'], 'review.key_issues_to_review[0].issue_content')
-            self.assertEqual(submissions[1]['validation']['code'], 'rejected_findings_discarded')
-            tool_results = json.dumps([message for message in requests[3]['messages'] if message['role'] == 'tool'])
+            self.assertEqual(submissions[1]['validation']['field'], 'review.key_issues_to_review[1].end_line')
+            self.assertEqual(submissions[2]['validation']['code'], 'rejected_findings_discarded')
+            self.assertEqual(submissions[3]['validation']['code'], 'rejected_findings_discarded')
+            tool_results = json.dumps([message for message in requests[5]['messages'] if message['role'] == 'tool'])
             self.assertIn('cannot discard rejected findings', tool_results)
-            self.assertEqual(len(requests), 5)
+            self.assertEqual(len(requests), 7)
 
     def test_http_200_quota_response_restarts_real_engine_with_reserve_key(self):
         from ryt.failover import execute_with_pool

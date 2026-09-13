@@ -89,3 +89,51 @@ class SubmissionIntegrity(unittest.TestCase):
                     'field': 'review.key_issues_to_review[0].' + field,
                 })
                 self.assertNotIn('DO-NOT-LOG', json.dumps(events))
+
+    def test_line_validation_names_missing_or_invalid_field_without_values(self):
+        for field in ('start_line', 'end_line'):
+            for value in (None, 0, True, 1.5, 10000001, 'DO-NOT-LOG'):
+                with self.subTest(field=field, value=value):
+                    malformed = self.candidate()
+                    malformed['review']['key_issues_to_review'][0][field] = value
+                    with self.assertRaisesRegex(ValueError, 'key_issues_to_review\\[0\\].' + field):
+                        self.tools.call('submit_review', malformed)
+                    event = self.tools.events[-1]
+                    self.assertEqual(event['validation'], {
+                        'code': 'finding_line_invalid',
+                        'field': 'review.key_issues_to_review[0].' + field,
+                    })
+                    self.assertNotIn('DO-NOT-LOG', json.dumps(event))
+        malformed = self.candidate()
+        malformed['review']['key_issues_to_review'][0].update(start_line=4, end_line=3)
+        with self.assertRaisesRegex(ValueError, 'end_line'):
+            self.tools.call('submit_review', malformed)
+
+    def test_correcting_missing_end_line_preserves_every_finding(self):
+        corrected = self.candidate()
+        second = copy.deepcopy(corrected['review']['key_issues_to_review'][0])
+        second.update(issue_header='Check the second boundary', start_line=2, end_line=2)
+        corrected['review']['key_issues_to_review'].append(second)
+        malformed = copy.deepcopy(corrected)
+        del malformed['review']['key_issues_to_review'][1]['end_line']
+        with self.assertRaisesRegex(ValueError, 'key_issues_to_review\\[1\\].end_line'):
+            self.tools.call('submit_review', malformed)
+        self.assertEqual(self.tools.call('submit_review', corrected)['findings'], 2)
+        saved = json.loads((self.root / 'out/result.json').read_text())
+        self.assertEqual(saved['review'], corrected['review'])
+
+    def test_rejected_findings_cannot_be_silently_replaced_with_a_smaller_report(self):
+        corrected = self.candidate()
+        corrected['review']['key_issues_to_review'].append({
+            'relevant_file': 'auth.mjs', 'issue_header': 'Check another authorization boundary',
+            'issue_content': '[P1] The second guard also needs its awaited decision.',
+            'start_line': 2, 'end_line': 2,
+        })
+        malformed = copy.deepcopy(corrected)
+        del malformed['review']['key_issues_to_review'][1]['end_line']
+        with self.assertRaises(ValueError):
+            self.tools.call('submit_review', malformed)
+        with self.assertRaisesRegex(ValueError, 'cannot discard rejected findings'):
+            self.tools.call('submit_review', self.candidate())
+        self.assertFalse((self.root / 'out/result.json').exists())
+        self.assertEqual(self.tools.call('submit_review', corrected)['findings'], 2)
