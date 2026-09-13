@@ -20,7 +20,8 @@ class BaiTerminalCompatibility(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='ryt-bai-protocol-') as temp:
             root = Path(temp)
             data = fixture(root)
-            session = root / 'session'
+            # Dedicated GitHub runner paths exceed Linux's 108-byte socket-address limit.
+            session = root / ('runner-session-' + 'x' * 90)
             session.mkdir()
             requests = []
             actions = [('ryt_read_file', {'path': 'policy.mjs'}), ('ryt_submit_review', review())]

@@ -102,7 +102,15 @@ class ProviderBridge:
                     except OSError:
                         pass
 
-        self.server = ThreadingUnixHTTPServer(str(self.socket_path), Handler)
+        # GitHub's dedicated runner root plus nested session/attempt directories
+        # exceeds sockaddr_un.sun_path. Bind relative to an owned directory FD;
+        # the socket still lives in the same private, swept session directory.
+        directory_fd = os.open(self.socket_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            address = f'/proc/self/fd/{directory_fd}/{self.socket_path.name}'
+            self.server = ThreadingUnixHTTPServer(address, Handler)
+        finally:
+            os.close(directory_fd)
         os.chmod(self.socket_path, 0o600)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
