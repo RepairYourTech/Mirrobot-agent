@@ -53,7 +53,7 @@ class OpenCodeIntegration(unittest.TestCase):
                 stream.append('data: [DONE]\n\n')
                 return Stream(''.join(stream).encode())
             try:
-                with patch('ryt.bridge.urllib.request.urlopen',side_effect=response):
+                with patch('ryt.bridge.open_provider',side_effect=response):
                     result,telemetry=execute_agent(Path(os.environ['RYT_OPENCODE_BIN']),data,session,'NOT-A-REAL-KEY',lambda s:len(s)//4)
             except Exception:
                 print('MOCK TEST ENGINE STDERR:',(session/'stderr.log').read_text()[-10000:])
@@ -112,7 +112,7 @@ class FreshSessionIntegration(unittest.TestCase):
                          'model':'glm-5.3-flash','choices':[choice]})+'\n\n')
                 lines.append('data: '+json.dumps({'choices':[],'usage':{'prompt_tokens':100,'completion_tokens':50,'total_tokens':150}})+'\n\n')
                 return Stream((''.join(lines)+'data: [DONE]\n\n').encode())
-            with patch('ryt.bridge.urllib.request.urlopen',side_effect=response):
+            with patch.dict(os.environ, {'OPENAI_KEY': 'SYNTHETIC-CREDENTIAL'}), patch('ryt.bridge.open_provider',side_effect=response):
                 for i,group in enumerate(planned):asyncio.run(backend.predict(i,group))
             self.assertEqual(len(active),4)
             self.assertEqual([sorted(group) for group in seen], [sorted(p for p,_ in c) for c in planned])

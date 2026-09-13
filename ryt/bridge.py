@@ -12,6 +12,7 @@ import urllib.request
 from ryt.common import load_json, sha256, write_json
 from ryt.diagnostics import BridgeFailure, safe_failure
 from ryt.planning import INITIAL_INPUT_LIMIT
+from ryt.providers import profile
 from pathlib import Path
 
 ENDPOINT = 'https://api.z.ai/api/coding/paas/v4/chat/completions'
@@ -20,15 +21,28 @@ OUTPUT_TOKENS = LIMITS['output_tokens']
 CONTEXT_TOKENS = LIMITS['context_tokens']
 
 
+class NoProviderRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        raise BridgeFailure('provider_redirect')
+
+
+def open_provider(request, timeout):
+    return urllib.request.build_opener(NoProviderRedirect()).open(request, timeout=timeout)
+
+
 class ThreadingUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
 
 
 
 class ProviderBridge:
-    def __init__(self, api_key, count_tokens, *, endpoint=ENDPOINT, socket_path=None):
-        if endpoint != ENDPOINT:
+    def __init__(self, api_key, count_tokens, *, endpoint=None, socket_path=None, profile_id='zai', max_calls=64):
+        self.profile = profile(profile_id)
+        if endpoint is not None and endpoint != self.profile.endpoint:
             raise ValueError('provider endpoint is immutable')
+        if type(max_calls) is not int or not 1 <= max_calls <= 64:
+            raise ValueError('invalid provider call allocation')
+        self.max_calls = max_calls
         self.key = api_key
         self.token = secrets.token_hex(32)
         self.count_tokens = count_tokens
@@ -63,9 +77,9 @@ class ProviderBridge:
                         raise BridgeFailure('request_size')
                     payload = load_json(self.rfile.read(length))
                     record = bridge.validate(payload)
-                    request = urllib.request.Request(ENDPOINT, data=json.dumps(payload).encode(),
+                    request = urllib.request.Request(bridge.profile.endpoint, data=json.dumps(payload).encode(),
                         headers={'Authorization': 'Bearer ' + bridge.key, 'Content-Type': 'application/json'})
-                    with urllib.request.urlopen(request, timeout=600) as response:
+                    with open_provider(request, timeout=600) as response:
                         self.send_response(200)
                         self.send_header('Content-Type', response.headers.get('Content-Type', 'text/event-stream'))
                         self.send_header('Cache-Control', 'no-cache')
@@ -84,7 +98,7 @@ class ProviderBridge:
                     bridge.error = safe_failure(error)
                     bridge.failed.set()
                     try:
-                        self.send_error(502, 'provider request failed; no retry or fallback')
+                        self.send_error(502, 'provider request failed; session terminated')
                     except OSError:
                         pass
 
@@ -152,14 +166,21 @@ class ProviderBridge:
         raise ValueError('complete initial input packet missing from provider request')
 
     def validate(self, payload):
-        if payload.get('model') != 'glm-5.3-flash' or not isinstance(payload.get('messages'), list):
+        if payload.get('model') != self.profile.model or not isinstance(payload.get('messages'), list):
             raise ValueError('wrong model or messages')
         if payload.get('stream') is not True:
             raise ValueError('streaming required for completion evidence')
         requested = payload.pop('max_completion_tokens', payload.get('max_tokens', OUTPUT_TOKENS))
         if type(requested) is not int or requested < 1:
             raise BridgeFailure('output_limit')
-        payload['reasoning_effort'] = 'max'
+        if self.profile.thinking_enabled:
+            payload['reasoning_effort'] = self.profile.reasoning_effort
+            payload.pop('enable_thinking', None)
+        else:
+            payload.pop('reasoning_effort', None)
+            payload.pop('reasoning', None)
+            payload.pop('thinking', None)
+            payload['enable_thinking'] = False
         payload['max_tokens'] = min(requested, OUTPUT_TOKENS)
         payload['stream_options'] = {'include_usage': True}
         # A transient trusted budget notice is never a replacement for history.
@@ -183,9 +204,11 @@ class ProviderBridge:
         with self.lock:
             if prefilled and self.receipt_path is not None:
                 write_json(self.receipt_path, prefilled)
-            if len(self.records) >= 64:
+            if len(self.records) >= self.max_calls:
                 raise BridgeFailure('call_limit')
-            record = {'model': payload['model'], 'reasoning_effort': payload['reasoning_effort'],
+            record = {'model': payload['model'], 'provider': self.profile.provider,
+                      'reasoning_effort': self.profile.reasoning_effort,
+                      'thinking_enabled': self.profile.thinking_enabled,
                       'request_sha256': sha256(json.dumps(payload, sort_keys=True)),
                       'estimated_input_tokens': tokens,
                       'remaining_input_tokens': CONTEXT_TOKENS - OUTPUT_TOKENS - 1024 - tokens, 'max_output_tokens': payload['max_tokens'], 'finish_reasons': [], 'usage': {}, 'reported_models': [],
@@ -208,13 +231,19 @@ class ProviderBridge:
         if data.get('error'):
             raise BridgeFailure('stream_error')
         model = data.get('model')
-        if model and model.lower() != 'glm-5.3-flash':
+        if model and model.lower() != self.profile.model:
             raise BridgeFailure('reported_model')
         if model and model not in record['reported_models']:
             record['reported_models'].append(model)
         if data.get('usage'):
             record['usage'] = data['usage']
+            reasoning = (data['usage'].get('completion_tokens_details') or {}).get('reasoning_tokens', 0)
+            if not self.profile.thinking_enabled and reasoning:
+                raise BridgeFailure('unexpected_thinking')
         for choice in data.get('choices', []):
+            delta = choice.get('delta') or {}
+            if not self.profile.thinking_enabled and (delta.get('reasoning_content') or delta.get('reasoning')):
+                raise BridgeFailure('unexpected_thinking')
             reason = choice.get('finish_reason')
             if reason:
                 record['finish_reasons'].append(reason)

@@ -55,7 +55,10 @@ TOOLS = [
 
 
 class RepositoryTools:
-    def __init__(self, data, output):
+    def __init__(self, data, output, max_tools=384):
+        if type(max_tools) is not int or not 1 <= max_tools <= 384:
+            raise ValueError('invalid tool allocation')
+        self.max_tools = max_tools
         self.data = Path(data)
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=True)
@@ -87,7 +90,7 @@ class RepositoryTools:
         return [p for p in sorted(self.context['snapshot_files']) if p.startswith(prefix)]
 
     def execute(self, name, args):
-        if len(self.events) >= 384:
+        if len(self.events) >= self.max_tools:
             raise ValueError('tool-call limit exceeded')
         if self.submitted:
             raise ValueError('review already finalized')
@@ -233,7 +236,7 @@ class RepositoryTools:
 
 
 def main():
-    tools = RepositoryTools(sys.argv[1], sys.argv[2])
+    tools = RepositoryTools(sys.argv[1], sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 384)
     for line in sys.stdin:
         if len(line) > 1024 * 1024:
             raise ValueError('MCP input budget exceeded')
