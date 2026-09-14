@@ -200,20 +200,46 @@ class RepositoryTools:
         if missing:
             raise ValueError('undelivered diff pages: ' + json.dumps(missing))
         files = args['files']
-        if (not isinstance(files, list) or sorted(x.get('path', '') for x in files) != sorted(self.diffs) or
-                any(not isinstance(x.get('analysis'), str) or len(x['analysis'].strip()) < 10 for x in files)):
-            raise ValueError('each required file needs exactly one substantive disposition')
+        if not isinstance(files, list):
+            raise SubmissionValidationError('file_dispositions_required', 'files',
+                'files must be an array containing exactly one substantive disposition per assigned file')
+        for index, item in enumerate(files):
+            field = f'files[{index}]'
+            if not isinstance(item, dict):
+                raise SubmissionValidationError('file_disposition_object_required', field,
+                    f'{field} must be an object with path and analysis; correct the record without dropping findings')
+            path = item.get('path')
+            if not isinstance(path, str) or path not in self.diffs:
+                raise SubmissionValidationError('assigned_file_required', field + '.path',
+                    f'{field}.path must identify an assigned file from review_context; correct this field')
+            analysis = item.get('analysis')
+            if not isinstance(analysis, str) or len(analysis.strip()) < 10:
+                raise SubmissionValidationError('file_analysis_required', field + '.analysis',
+                    f'{field}.analysis must contain at least ten characters after trimming')
+        if sorted(item['path'] for item in files) != sorted(self.diffs):
+            raise SubmissionValidationError('file_dispositions_mismatch', 'files',
+                'files must contain exactly one substantive disposition per assigned file; no missing or duplicate entries')
         review = args['review']
-        findings = review.get('key_issues_to_review') if isinstance(review, dict) else None
+        if not isinstance(review, dict):
+            raise SubmissionValidationError('review_object_required', 'review',
+                'review must be an object containing the declared review sections')
+        findings = review.get('key_issues_to_review')
         if not isinstance(findings, list):
-            raise ValueError('missing structured findings array')
+            raise SubmissionValidationError('findings_array_required', 'review.key_issues_to_review',
+                'review.key_issues_to_review must be an array; preserve attempted findings when correcting it')
         if len(findings) < self.finding_count_attempted:
             raise SubmissionValidationError('rejected_findings_discarded', 'review.key_issues_to_review',
                 f'report cannot discard rejected findings: submitted {len(findings)}, '
                 f'previously attempted {self.finding_count_attempted}; correct the finding fields and resubmit')
         for index, issue in enumerate(findings):
-            if issue.get('relevant_file') not in self.diffs:
-                raise ValueError('finding must anchor to a changed file in this chunk')
+            field = f'review.key_issues_to_review[{index}]'
+            if not isinstance(issue, dict):
+                raise SubmissionValidationError('finding_object_required', field,
+                    f'{field} must be an object containing the declared finding fields; preserve and correct it')
+            anchor = issue.get('relevant_file')
+            if not isinstance(anchor, str) or anchor not in self.diffs:
+                raise SubmissionValidationError('finding_anchor_invalid', field + '.relevant_file',
+                    f'{field}.relevant_file must identify a changed file assigned to this session; correct the anchor')
             for key in ('issue_header', 'issue_content'):
                 if not isinstance(issue.get(key), str) or not issue[key].strip():
                     field = f'review.key_issues_to_review[{index}].{key}'
@@ -223,7 +249,9 @@ class RepositoryTools:
             finding_line(issue, 'end_line', index, start)
         for key in ('security_concerns', 'risk_level', 'merge_recommendation'):
             if not isinstance(review.get(key), str) or not review[key].strip():
-                raise ValueError('missing required review section')
+                field = 'review.' + key
+                raise SubmissionValidationError('review_section_required', field,
+                    f'{field} must be a nonempty string; preserve the findings and correct this section')
         record = {'schema': 1, 'review': review, 'files': files,
                   'coverage': {p: {'sha256': sha256(t), 'lines': len(t.splitlines()),
                                     'delivered_lines': len(self.coverage[p])} for p, t in self.diffs.items()}}
