@@ -10,6 +10,39 @@ from ryt.providers import ProviderPool, routes
 
 
 class FailoverExecution(unittest.TestCase):
+    def test_unrecognized_progress_code_cannot_leak_as_a_diagnostic(self):
+        pool = ProviderPool(routes({'PR_REVIEW_BAI_01': 'bai'}))
+        def execute(binary, data, session, *args, **kwargs):
+            write_json(session / 'progress.json', {'failure_code': 'PRIVATE-PROVIDER-MESSAGE'})
+            raise ValueError('private exception')
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with self.assertRaises(ValueError):
+                execute_with_pool(execute, None, None, root, pool, len, '', 60)
+            progress = json.loads((root / 'progress.json').read_text())
+        self.assertEqual(progress['failure_code'], 'non_retryable_session_failure')
+        self.assertNotIn('PRIVATE', json.dumps(progress))
+
+    def test_terminal_failure_preserves_specific_diagnostic_and_tool_validation(self):
+        pool = ProviderPool(routes({'PR_REVIEW_BAI_01': 'bai'}))
+        tool = {'tool': 'submit_review', 'status': 'failed',
+                'validation': {'code': 'finding_line_invalid',
+                               'field': 'review.key_issues_to_review[0].end_line'}}
+        def execute(binary, data, session, *args, **kwargs):
+            write_json(session / 'progress.json', {'failure_code': 'finish_length',
+                'provider_requests': [{'finish_reasons': ['length']}], 'tool_events': [tool]})
+            raise ValueError('private provider text must never be copied')
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with self.assertRaises(ValueError):
+                execute_with_pool(execute, None, None, root, pool, len, '', 60)
+            progress = json.loads((root / 'progress.json').read_text())
+        self.assertEqual(progress['failure_code'], 'finish_length')
+        self.assertEqual(progress['attempts'][0]['failure_code'], 'finish_length')
+        self.assertFalse(progress['attempts'][0]['retryable'])
+        self.assertEqual(progress['tool_events'], [tool])
+        self.assertNotIn('private provider text', json.dumps(progress))
+
     def test_rate_limit_restarts_in_fresh_session_with_same_snapshot_and_remaining_budget(self):
         pool = ProviderPool(routes({'OPENAI_KEY': 'glm', 'PR_REVIEW_BAI_01': 'bai1', 'PR_REVIEW_BAI_02': 'bai2'}))
         calls = []
