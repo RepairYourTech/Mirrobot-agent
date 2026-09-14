@@ -2,6 +2,7 @@
 import time
 
 from ryt.common import load_json, read_text, write_json
+from ryt.diagnostics import public_failure_code
 
 
 def execute_with_pool(execute, binary, data, root, pool, count_tokens, policy, timeout_seconds):
@@ -24,19 +25,20 @@ def execute_with_pool(execute, binary, data, root, pool, count_tokens, policy, t
         except Exception:
             progress_path = session / 'progress.json'
             progress = load_json(read_text(progress_path)) if progress_path.exists() else {}
-            code = progress.get('failure_code')
+            code = public_failure_code(progress.get('failure_code'))
             requests = progress.get('provider_requests', [])
             used_calls += len(requests)
             tools = progress.get('tool_events', [])
             used_tools += len(tools)
             retryable = pool.fail(route, code)
-            # Only the closed set accepted by ProviderPool becomes a failure code.
+            # Preserve the cause independently of whether the route can retry.
+            # Arbitrary progress values and exception messages stay private.
             attempts.append({'route': route.alias, 'profile': route.profile, 'status': 'failed',
-                'failure_code': code if retryable else 'non_retryable_session_failure',
+                'failure_code': code, 'retryable': retryable,
                 'request_count': len(requests), 'tool_count': len(tools),
                 'elapsed_seconds': round(time.monotonic() - attempt_started, 3)})
             write_json(root / 'progress.json', {'failure_code': attempts[-1]['failure_code'],
-                'attempts': attempts, 'provider_requests': requests})
+                'attempts': attempts, 'provider_requests': requests, 'tool_events': tools})
             if not retryable:
                 raise
             continue

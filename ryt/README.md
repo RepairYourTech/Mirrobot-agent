@@ -79,6 +79,14 @@ input+output remains within RYT128K policy. The previous16K cap could terminate
 long maximum-reasoning responses. Truncation still fails; no partial response is
 accepted. GLM keeps maximum reasoning; Qwen explicitly disables thinking. Typed
 stream-failure codes and final metadata distinguish limits from transport failures.
+The fallback wrapper preserves those codes for non-retryable failures too, alongside
+tool validation records. Engine completion and receipt validation failures receive
+fixed public-safe codes; arbitrary exception text is never copied into job evidence.
+The retry decision is recorded separately and does not change completeness checks.
+An unavailable tool call rejected by the pinned OpenCode engine before execution
+may be corrected within the same session. The exact engine rejection is counted
+in evidence; unexpected tool execution or any other undeclared-tool event still
+fails. A corrected session must satisfy every submission and receipt check.
 
 
 ## Bounded multi-file investigation sessions

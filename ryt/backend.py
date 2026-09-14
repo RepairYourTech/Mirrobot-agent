@@ -18,6 +18,7 @@ from ryt.hygiene import create_session_directory, secure_active_session, touch_s
 from ryt.planning import plan_sessions, INITIAL_INPUT_LIMIT
 from ryt.providers import profile, routes, ProviderPool
 from ryt.failover import execute_with_pool
+from ryt.diagnostics import SessionFailure, safe_failure
 from ryt.tool_server import TOOLS
 from ryt.common import load_json, read_text, sha256, write_json
 from ryt.probe import base_sandbox
@@ -214,8 +215,76 @@ def session_budget(deadline, remaining_chunks, now=None):
     return granted
 
 
+def audit_engine_tools(events):
+    allowed = {'ryt_' + tool['name'] for tool in TOOLS}
+    # Pinned OpenCode rewrites an unknown call to its unavailable `invalid`
+    # handler and records this exact pre-execution rejection under the original
+    # name. The real-engine regression proves no tool ran and correction works.
+    rejection = ("Model tried to call unavailable tool 'invalid'. Available tools: "
+                 + ', '.join(sorted(allowed)) + '.')
+    rejected = 0
+    for event in events:
+        if event.get('type') != 'tool_use':
+            continue
+        part = event.get('part', {})
+        if part.get('tool') in allowed:
+            continue
+        state = part.get('state', {})
+        if state.get('status') != 'error' or state.get('error') != rejection:
+            raise SessionFailure('engine_tool_not_allowed')
+        rejected += 1
+    return rejected
+
+
+def validate_session_output(session_root, requests):
+    output = session_root / 'evidence'
+    events = [load_json(line) for line in (session_root / 'events.jsonl').read_text().splitlines()
+              if line.strip().startswith('{')]
+    rejected_tool_calls = audit_engine_tools(events)
+    if any(event.get('type') == 'error' for event in events):
+        raise SessionFailure('engine_error_event')
+    finishes = [event for event in events if event.get('type') == 'step_finish']
+    if not finishes or finishes[-1].get('part', {}).get('reason') != 'stop':
+        raise SessionFailure('engine_missing_stop')
+    if not requests or any(not request['finish_reasons'] for request in requests):
+        raise SessionFailure('provider_missing_completion')
+    if not (output / 'result.json').is_file():
+        raise SessionFailure('missing_submission')
+    result = load_json(read_text(output / 'result.json'))
+    tools = load_json(read_text(output / 'tools.json'))
+    received = {digest for request in requests for digest in request['tool_results_sha256']}
+    expected = {event['output_sha256'] for event in tools
+                if event['tool'] == 'read_diff' and event['status'] == 'success'}
+    if not expected <= received:
+        raise SessionFailure('tool_delivery_mismatch')
+    prefills = [request['prefilled_files'] for request in requests if request['prefilled_files']]
+    if not prefills or set(prefills[0]) != set(result['coverage']):
+        raise SessionFailure('initial_coverage_missing')
+    for path, coverage in result['coverage'].items():
+        if prefills[0][path] != {'sha256': coverage['sha256'], 'lines': coverage['lines']}:
+            raise SessionFailure('reported_coverage_mismatch')
+    return result, tools, rejected_tool_calls
+
+
 def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_policy="", timeout_seconds=None,
                   *, profile_id='zai', max_calls=64, max_tools=384):
+    session_root = secure_active_session(session_root)
+    try:
+        return _execute_agent(binary, data, session_root, api_key, count_tokens, trusted_policy, timeout_seconds,
+            profile_id=profile_id, max_calls=max_calls, max_tools=max_tools)
+    except Exception as error:
+        # The process heartbeat precedes final receipt validation. Retain errors
+        # from that validation too, using fixed codes rather than exception text.
+        progress_path = session_root / 'progress.json'
+        if progress_path.exists():
+            progress = load_json(read_text(progress_path))
+            progress['failure_code'] = progress.get('failure_code') or safe_failure(error)
+            write_json(progress_path, progress)
+        raise
+
+
+def _execute_agent(binary, data, session_root, api_key, count_tokens, trusted_policy="", timeout_seconds=None,
+                   *, profile_id='zai', max_calls=64, max_tools=384):
     selected = profile(profile_id)
     session_root = secure_active_session(session_root)
     work = session_root / 'work'; output = session_root / 'evidence'
@@ -255,12 +324,15 @@ def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_pol
                         print(json.dumps({'mirrobot_elapsed': round(elapsed), 'model_requests': len(bridge.records),
                             'completed_requests': sum(bool(r['finish_reasons']) for r in bridge.records),
                             'tool_calls': len(tool_events)}), flush=True)
-                    if (bridge.failed.is_set() or time.monotonic()-started > timeout_seconds or
-                            stdout_path.stat().st_size > 16*1024*1024 or stderr_path.stat().st_size > 2*1024*1024):
-                        raise ValueError('provider/session failure: ' + getattr(bridge, 'error', 'execution budget exceeded'))
+                    if bridge.failed.is_set():
+                        raise SessionFailure('engine_process_failed')
+                    if time.monotonic()-started > timeout_seconds:
+                        raise SessionFailure('session_timeout')
+                    if stdout_path.stat().st_size > 16*1024*1024 or stderr_path.stat().st_size > 2*1024*1024:
+                        raise SessionFailure('engine_output_limit')
                     time.sleep(0.5)
                 if process.returncode != 0 or bridge.failed.is_set():
-                    raise ValueError('OpenCode process/provider failed: ' + getattr(bridge, 'error', str(process.returncode)))
+                    raise SessionFailure('engine_process_failed')
             finally:
                 touch_session(session_root)
                 # Capture the final terminal metadata, not merely the last 30s
@@ -278,30 +350,9 @@ def execute_agent(binary, data, session_root, api_key, count_tokens, trusted_pol
                         process.wait(timeout=3)
                     except subprocess.TimeoutExpired:
                         os.killpg(process.pid, signal.SIGKILL); process.wait(timeout=3)
-        events = [load_json(line) for line in stdout_path.read_text().splitlines() if line.strip().startswith('{')]
-        if any(e.get('type') == 'tool_use' and not e.get('part', {}).get('tool', '').startswith('ryt_') for e in events):
-            raise ValueError('unexpected engine tool escaped the allowlist')
-        if any(event.get('type') == 'error' for event in events):
-            raise ValueError('OpenCode error event')
-        finishes = [e for e in events if e.get('type') == 'step_finish']
-        if not finishes or finishes[-1].get('part', {}).get('reason') != 'stop':
-            raise ValueError('OpenCode did not complete its final response')
-        if not bridge.records or any(not r['finish_reasons'] for r in bridge.records):
-            raise ValueError('missing provider completion evidence')
-        result = load_json(read_text(output / 'result.json'))
-        tools = load_json(read_text(output / 'tools.json'))
-        received = {digest for request in bridge.records for digest in request['tool_results_sha256']}
-        expected = {event['output_sha256'] for event in tools
-                    if event['tool'] == 'read_diff' and event['status'] == 'success'}
-        if not expected <= received:
-            raise ValueError('tool delivery was truncated or absent from actual provider requests')
-        prefills = [r['prefilled_files'] for r in bridge.records if r['prefilled_files']]
-        if not prefills or set(prefills[0]) != set(result['coverage']):
-            raise ValueError('initial model input coverage absent')
-        for path, coverage in result['coverage'].items():
-            if prefills[0][path] != {'sha256': coverage['sha256'], 'lines': coverage['lines']}:
-                raise ValueError('model input and reported coverage differ')
+        result, tools, rejected_tool_calls = validate_session_output(session_root, bridge.records)
         telemetry = {'backend': 'mirrobot-opencode', 'upstream': LOCK['upstream'],
+            'rejected_engine_tool_calls': rejected_tool_calls,
             'opencode_version': LOCK['opencode']['version'], 'model': 'openai/' + selected.model,
             'provider': selected.provider, 'reasoning_effort': selected.reasoning_effort,
             'thinking_enabled': selected.thinking_enabled,

@@ -16,6 +16,71 @@ from test_opencode import Stream
 
 @unittest.skipUnless(os.environ.get('RYT_OPENCODE_BIN'), 'explicit pinned binary required')
 class BaiTerminalCompatibility(unittest.TestCase):
+    def test_rejected_unknown_tool_can_be_corrected_without_losing_completed_review(self):
+        with tempfile.TemporaryDirectory(prefix='ryt-bai-unknown-tool-') as temp:
+            root = Path(temp)
+            data = fixture(root)
+            session = root / 'session'
+            session.mkdir()
+            requests = []
+            actions = [('not_a_registered_tool', {}),
+                       ('ryt_read_file', {'path': 'policy.mjs'}), ('ryt_submit_review', review())]
+            def response(request, timeout):
+                index = len(requests)
+                requests.append(load_json(request.data))
+                if index < len(actions):
+                    name, arguments = actions[index]
+                    delta = {'role': 'assistant', 'tool_calls': [{'index': 0, 'id': f'unknown-{index}',
+                        'type': 'function', 'function': {'name': name, 'arguments': json.dumps(arguments)}}]}
+                    finish = 'tool_calls'
+                else:
+                    delta = {'role': 'assistant', 'content': 'Review submitted.'}
+                    finish = 'stop'
+                return Stream(('data: ' + json.dumps({'model': 'qwen3.8-flash', 'choices': [{
+                    'index': 0, 'delta': delta, 'finish_reason': finish}]}) + '\n\ndata: [DONE]\n\n').encode())
+            with patch('ryt.bridge.open_provider', side_effect=response):
+                try:
+                    result, evidence = execute_agent(Path(os.environ['RYT_OPENCODE_BIN']), data, session,
+                        'SYNTHETIC-CREDENTIAL', lambda text: len(text) // 4, timeout_seconds=30,
+                        profile_id='bai-qwen')
+                finally:
+                    events = [load_json(line) for line in (session / 'events.jsonl').read_text().splitlines()
+                              if line.startswith('{')]
+                    non_ryt = [event['part'] for event in events if event.get('type') == 'tool_use'
+                               and not event['part']['tool'].startswith('ryt_')]
+                    self.assertEqual([(part['tool'], part['state']['status']) for part in non_ryt],
+                                     [('not_a_registered_tool', 'error')])
+                    self.assertEqual(non_ryt[0]['state']['error'],
+                        "Model tried to call unavailable tool 'invalid'. Available tools: "
+                        'ryt_list_files, ryt_read_context, ryt_read_diff, ryt_read_file, ryt_review_context, '
+                        'ryt_run_probe, ryt_search, ryt_submit_review.')
+                    self.assertTrue((session / 'evidence/result.json').is_file())
+            self.assertEqual(set(result['coverage']), {'auth.mjs'})
+            self.assertEqual([event['tool'] for event in evidence['tool_events']], ['read_file', 'submit_review'])
+            self.assertEqual(evidence['rejected_engine_tool_calls'], 1)
+            self.assertEqual(len(requests), 4)
+            self.assertIn('unavailable tool', json.dumps(requests[1]['messages']))
+
+    def test_chat_only_completion_retains_missing_submission_diagnostic(self):
+        with tempfile.TemporaryDirectory(prefix='ryt-bai-missing-submit-') as temp:
+            root = Path(temp)
+            data = fixture(root)
+            session = root / 'session'
+            session.mkdir()
+            def response(request, timeout):
+                return Stream(('data: ' + json.dumps({'model': 'qwen3.8-flash', 'choices': [{
+                    'index': 0, 'delta': {'role': 'assistant', 'content': 'No tool submission.'},
+                    'finish_reason': 'stop'}]}) + '\n\ndata: [DONE]\n\n').encode())
+            with patch('ryt.bridge.open_provider', side_effect=response), self.assertRaises(ValueError):
+                execute_agent(Path(os.environ['RYT_OPENCODE_BIN']), data, session,
+                    'SYNTHETIC-CREDENTIAL', lambda text: len(text) // 4, timeout_seconds=30,
+                    profile_id='bai-qwen')
+            progress = load_json((session / 'progress.json').read_text())
+            self.assertEqual(progress['failure_code'], 'missing_submission')
+            self.assertEqual(progress['provider_requests'][-1]['finish_reasons'], ['stop'])
+            self.assertEqual(progress['tool_events'], [])
+            self.assertNotIn('SYNTHETIC-CREDENTIAL', json.dumps(progress))
+
     def test_rejected_findings_survive_real_engine_finalization(self):
         import copy
         with tempfile.TemporaryDirectory(prefix='ryt-bai-submission-') as temp:
