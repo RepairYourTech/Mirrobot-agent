@@ -65,6 +65,13 @@ guard does not prove semantic equivalence between successive nonempty reports.
 Finding text and line validation records only a trusted field path and error code in tool
 evidence. Runtime coverage is separate from benchmark defect-detection quality.
 
+Malformed nested file or finding records receive indexed, value-free field
+diagnostics before object or path operations. They do not poison the session;
+a fully corrected report remains possible. Exact file accounting and the
+attempted-finding count guard remain mandatory. Genuine internal or fatal
+inspection/probe errors still prevent completion. No malformed entries are
+coerced, ignored or silently removed.
+
 See PLAN.md for promotion gates and rollback. RYT source, diffs, prompts containing
 private context, API keys and raw model session logs must never be committed here.
 
