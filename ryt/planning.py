@@ -4,7 +4,7 @@ from ryt.common import sha256
 MAX_SESSIONS = 8
 MAX_FILES = 4
 DIFF_TARGET_TOKENS = 8192
-INITIAL_INPUT_LIMIT = 49152
+INITIAL_INPUT_LIMIT = 65536
 
 
 def token_count(value):

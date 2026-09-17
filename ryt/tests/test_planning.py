@@ -48,6 +48,21 @@ class SessionPlanning(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'initial context'):
             plan_sessions([[('large', 'complete diff')]], len, lambda _: 65537)
 
+    def test_initial_allocation_accepts_64k_without_changing_complete_input(self):
+        files = [('large', 'x' * 41536)]
+        chunks, manifest = self.plan(files)
+        self.assertEqual(chunks, [files])
+        self.assertEqual(manifest['initial_input_limit'], 65536)
+        self.assertEqual(manifest['sessions'][0]['estimated_initial_tokens'], 65536)
+        with self.assertRaisesRegex(ValueError, 'initial context'):
+            self.plan([('large', 'x' * 41537)])
+
+    def test_initial_allocation_splits_before_64k_even_when_diff_target_fits(self):
+        files = [('a', 'x' * 3000), ('b', 'y' * 3000)]
+        chunks, _ = plan_sessions([files], len,
+            lambda group: 60000 + sum(len(text) for _, text in group))
+        self.assertEqual(chunks, [[files[0]], [files[1]]])
+
     def test_unfit_file_and_unfit_scope_fail_instead_of_truncating_or_expanding_calls(self):
         with self.assertRaisesRegex(ValueError,'initial context'):
             self.plan([('huge','x'*50000)])
