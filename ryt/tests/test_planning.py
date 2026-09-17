@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from ryt.planning import MAX_FILES, MAX_SESSIONS, plan_sessions
+from ryt.planning import INITIAL_INPUT_LIMIT, MAX_FILES, MAX_SESSIONS, plan_sessions
 
 
 class SessionPlanning(unittest.TestCase):
@@ -32,9 +32,25 @@ class SessionPlanning(unittest.TestCase):
         self.assertEqual(len(chunks[0][0][1]),15000)
         self.assertEqual(len(chunks),2)
 
+    def test_reviewed_initial_allocations_preserve_independent_headroom_floor(self):
+        from ryt.bridge import CONTEXT_TOKENS, OUTPUT_TOKENS
+        self.assertIn(INITIAL_INPUT_LIMIT, (49152, 65536))
+        self.assertEqual(CONTEXT_TOKENS, 131072)
+        self.assertEqual(OUTPUT_TOKENS, 32768)
+        self.assertGreaterEqual(CONTEXT_TOKENS - OUTPUT_TOKENS - 1024 - INITIAL_INPUT_LIMIT, 31744)
+        files = [('large', 'x' * (INITIAL_INPUT_LIMIT - 24000))]
+        chunks, manifest = self.plan(files)
+        self.assertEqual(chunks, [files])
+        self.assertEqual(manifest['initial_input_limit'], INITIAL_INPUT_LIMIT)
+        self.assertEqual(manifest['sessions'][0]['estimated_initial_tokens'], INITIAL_INPUT_LIMIT)
+        with self.assertRaisesRegex(ValueError, 'initial context'):
+            self.plan([('large', 'x' * (INITIAL_INPUT_LIMIT - 24000 + 1))])
+        with self.assertRaisesRegex(ValueError, 'initial context'):
+            plan_sessions([[('large', 'complete diff')]], len, lambda _: 65537)
+
     def test_unfit_file_and_unfit_scope_fail_instead_of_truncating_or_expanding_calls(self):
         with self.assertRaisesRegex(ValueError,'initial context'):
-            self.plan([('huge','x'*30000)])
+            self.plan([('huge','x'*50000)])
         # The trusted assurance test follows the pinned planner constants so
         # the base-revision controller can validate a separately reviewed cap change.
         self.assertEqual(MAX_SESSIONS,8)
@@ -66,13 +82,14 @@ class InitialRequestBudget(unittest.TestCase):
         import tempfile
         from ryt.bridge import ProviderBridge
         from ryt.common import load_json
-        for tokens,accepted in [(49152,True),(49153,False)]:
+        for tokens,accepted in [(INITIAL_INPUT_LIMIT,True),(INITIAL_INPUT_LIMIT + 1,False),(65537,False)]:
             with tempfile.TemporaryDirectory() as temp,ProviderBridge('SYNTHETIC',lambda _:tokens) as bridge:
                 packet=bridge.input_packet({'diffs':{'x':'diff'}},Path(temp)/'receipt.json')
                 payload={'model':'glm-5.3-flash','messages':[{'role':'user','content':packet}],'stream':True}
                 if accepted:
                     record=bridge.validate(payload)
-                    self.assertEqual(record['remaining_input_tokens'],48128)
+                    self.assertEqual(record['remaining_input_tokens'],131072 - 32768 - 1024 - tokens)
+                    self.assertGreaterEqual(record['remaining_input_tokens'],31744)
                     self.assertEqual(payload['reasoning_effort'],'max')
                     self.assertEqual(payload['max_tokens'],32768)
                 else:
