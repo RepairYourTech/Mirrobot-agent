@@ -100,8 +100,10 @@ fails. A corrected session must satisfy every submission and receipt check.
 
 A review is planned before inference into at most eight independent sessions. Each
 normally contains at most four files and targets 8192 diff tokens, with the full
-initial request estimated below 49152 tokens to leave room for investigation and
-the unchanged 32K output reservation. An indivisible file above the diff target is
+initial request estimated at no more than 65536 tokens. Within the unchanged
+131072-token context limit, this retains the full 32768-token output reservation,
+1024-token safety margin, and at least 31744 tokens for further investigation.
+The planner and first-request bridge enforce the same initial ceiling. An indivisible file above the diff target is
 kept intact only when its full initial packet fits. Otherwise the job fails with
 an explicit split-required error; nothing is silently omitted or clipped.
 
