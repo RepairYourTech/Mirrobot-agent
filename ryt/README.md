@@ -146,7 +146,7 @@ a bounded transient buffer, never copied into evidence. The closed code retires
 the key and advances to the next approved route. Once a bridge fails it rejects
 SDK retries before any further upstream requests and preserves the first failure.
 
-Qwen enters a finalization phase when at most 32K plus 1K safety of input capacity,
+Both GLM and Qwen enter a finalization phase when at most 32K plus 1K safety of input capacity,
 or eight provider requests, remain. The provider then receives only the structured
 submission tool with explicit function choice; every original message and complete
 diff stays in the input. Merely hiding inspection schemas does not reliably stop
