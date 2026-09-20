@@ -184,7 +184,7 @@ class ProviderBridge:
 
     def budget_notice(self, payload, remaining):
         calls = max(0, self.max_calls - len(self.records) - 1)
-        if self.profile.provider == 'bai' and (remaining <= OUTPUT_TOKENS + 1024 or calls <= 8):
+        if remaining <= OUTPUT_TOKENS + 1024 or calls <= 8:
             self.finalizing = True
         notice = f' After this request, at most {calls} provider requests remain in this session allocation.'
         if self.finalizing:
