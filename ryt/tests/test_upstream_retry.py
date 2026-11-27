@@ -143,6 +143,44 @@ class SameRouteRetry(unittest.TestCase):
         self.assertEqual(upstream.provider_error(refusal(500, b'{"code":"x"}' + b' ' * 9000)), {})
 
 
+class StalledBody(io.RawIOBase):
+    """An error body whose read blocks until released, like a provider that stalls after the status."""
+    def __init__(self):
+        import threading
+        self.released = threading.Event()
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        self.released.wait(30)
+        return 0
+
+
+class ErrorBodyBounds(unittest.TestCase):
+    def test_a_stalled_error_body_cannot_hold_the_retry_or_the_failure_signal(self):
+        body = StalledBody()
+        error = urllib.error.HTTPError('https://upstream.invalid', 429, 'refused', {}, body)
+        try:
+            with patch.object(upstream, 'ERROR_BODY_SECONDS', 0.2):
+                started = time.monotonic()
+                self.assertEqual(upstream.provider_error(error), {})
+                self.assertLess(time.monotonic() - started, 2)
+        finally:
+            body.released.set()
+
+    def test_a_parser_recursion_failure_keeps_the_http_status(self):
+        # Within the 8 KiB bound CPython's scanner does not recurse that deep today; the guard
+        # keeps a parser limit from turning HTTP_429 into transport_RecursionError (no failover).
+        record = {}
+        with patch.object(upstream.json, 'loads', side_effect=RecursionError), \
+                self.assertRaises(urllib.error.HTTPError) as raised:
+            upstream.open_with_retry(lambda: (_ for _ in ()).throw(refusal(400, b'{"error":{"code":"x"}}')),
+                                     record, lambda seconds: False)
+        self.assertEqual(raised.exception.code, 400)
+        self.assertEqual(record['upstream_errors'], [{'status': 400}])
+
+
 class PerChunkRotation(unittest.TestCase):
     def test_rate_limit_skips_only_the_current_chunk_but_an_outage_retires_glm(self):
         pool = ProviderPool(routes({'OPENAI_KEY': 'glm'}))
