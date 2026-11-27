@@ -6,12 +6,18 @@ import unittest
 
 from ryt.common import write_json
 from ryt.failover import execute_with_pool
-from ryt.providers import ProviderPool, routes
+from ryt.providers import ProviderPool, Route, routes
+
+
+def two_glm_keys():
+    # Deployment configures one GLM route. The pool stays generic, so its cross-attempt budget
+    # and fresh-session invariants are still proven with two keys on the same fixed profile.
+    return ProviderPool([Route('zai-01', 'zai', 'glm'), Route('zai-02', 'zai', 'glm-reserve')])
 
 
 class FailoverExecution(unittest.TestCase):
     def test_unrecognized_progress_code_cannot_leak_as_a_diagnostic(self):
-        pool = ProviderPool(routes({'PR_REVIEW_BAI_01': 'bai'}))
+        pool = ProviderPool(routes({'OPENAI_KEY': 'glm'}))
         def execute(binary, data, session, *args, **kwargs):
             write_json(session / 'progress.json', {'failure_code': 'PRIVATE-PROVIDER-MESSAGE'})
             raise ValueError('private exception')
@@ -24,7 +30,7 @@ class FailoverExecution(unittest.TestCase):
         self.assertNotIn('PRIVATE', json.dumps(progress))
 
     def test_terminal_failure_preserves_specific_diagnostic_and_tool_validation(self):
-        pool = ProviderPool(routes({'PR_REVIEW_BAI_01': 'bai'}))
+        pool = ProviderPool(routes({'OPENAI_KEY': 'glm'}))
         tool = {'tool': 'submit_review', 'status': 'failed',
                 'validation': {'code': 'finding_line_invalid',
                                'field': 'review.key_issues_to_review[0].end_line'}}
@@ -44,7 +50,7 @@ class FailoverExecution(unittest.TestCase):
         self.assertNotIn('private provider text', json.dumps(progress))
 
     def test_rate_limit_restarts_in_fresh_session_with_same_snapshot_and_remaining_budget(self):
-        pool = ProviderPool(routes({'OPENAI_KEY': 'glm', 'PR_REVIEW_BAI_01': 'bai1', 'PR_REVIEW_BAI_02': 'bai2'}))
+        pool = two_glm_keys()
         calls = []
         def execute(binary, data, session, key, count_tokens, policy, timeout_seconds, **options):
             calls.append((session, key, options))
@@ -54,22 +60,23 @@ class FailoverExecution(unittest.TestCase):
                 write_json(session / 'progress.json', {'failure_code': 'HTTP_429',
                     'provider_requests': [{'model': 'glm-5.3-flash'}], 'tool_events': [{}]})
                 raise ValueError('arbitrary text must not enter evidence')
-            return {'complete': True}, {'provider_requests': [{'model': 'qwen3.8-flash'}], 'tool_events': [{}]}
+            return {'complete': True}, {'provider_requests': [{'model': 'glm-5.3-flash'}], 'tool_events': [{}]}
         with tempfile.TemporaryDirectory() as temp:
             result, telemetry = execute_with_pool(execute, Path('/binary'), Path('/same-snapshot'),
                 Path(temp), pool, len, 'trusted-policy', 60)
         self.assertTrue(result['complete'])
         self.assertNotEqual(calls[0][0], calls[1][0])
         self.assertEqual(calls[0][2], {'profile_id': 'zai', 'max_calls': 64, 'max_tools': 384})
-        self.assertEqual(calls[1][2], {'profile_id': 'bai-qwen', 'max_calls': 63, 'max_tools': 383})
-        self.assertEqual(telemetry['route'], 'bai-01')
+        self.assertEqual(calls[1][2], {'profile_id': 'zai', 'max_calls': 63, 'max_tools': 383})
+        self.assertEqual(telemetry['route'], 'zai-02')
         self.assertEqual([a['status'] for a in telemetry['attempts']], ['failed', 'complete'])
         self.assertNotIn('arbitrary', json.dumps(telemetry))
-        self.assertEqual(pool.next().alias, 'bai-01')
+        # A rate limit is not an outage: the next chunk starts on the primary key again (issue 2710).
+        self.assertEqual(pool.next().alias, 'zai-01')
         self.assertEqual(telemetry['pool_tool_count'], 2)
 
     def test_assurance_failure_is_not_hidden_by_trying_another_model(self):
-        pool = ProviderPool(routes({'OPENAI_KEY': 'glm', 'PR_REVIEW_BAI_01': 'bai'}))
+        pool = ProviderPool(routes({'OPENAI_KEY': 'glm'}))
         seen = []
         def execute(binary, data, session, *args, **kwargs):
             seen.append(session)
@@ -80,7 +87,7 @@ class FailoverExecution(unittest.TestCase):
         self.assertEqual(len(seen), 1)
 
     def test_full_call_budget_cannot_be_reset_by_changing_credentials(self):
-        pool = ProviderPool(routes({'OPENAI_KEY': 'glm', 'PR_REVIEW_BAI_01': 'bai'}))
+        pool = two_glm_keys()
         seen = []
         def execute(binary, data, session, *args, **kwargs):
             seen.append(session)
@@ -91,7 +98,7 @@ class FailoverExecution(unittest.TestCase):
         self.assertEqual(len(seen), 1)
 
     def test_full_tool_budget_cannot_be_reset_by_changing_credentials(self):
-        pool = ProviderPool(routes({'OPENAI_KEY': 'glm', 'PR_REVIEW_BAI_01': 'bai'}))
+        pool = two_glm_keys()
         seen = []
         def execute(binary, data, session, *args, **kwargs):
             seen.append(session)

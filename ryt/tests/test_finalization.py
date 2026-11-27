@@ -14,8 +14,8 @@ from test_opencode import Stream
 
 
 class FinalizationContracts(unittest.TestCase):
-    def test_both_profiles_reserve_context_at_the_existing_boundary(self):
-        for selected, model in [('zai', 'glm-5.3-flash'), ('bai-qwen', 'qwen3.8-flash')]:
+    def test_glm_reserves_context_at_the_existing_boundary(self):
+        for selected, model in [('zai', 'glm-5.3-flash')]:
             for tokens, finalizing in [(63487, False), (63488, True), (88194, True), (90532, True)]:
                 with self.subTest(profile=selected, tokens=tokens), ProviderBridge(
                         'synthetic', lambda text: tokens, profile_id=selected) as bridge:

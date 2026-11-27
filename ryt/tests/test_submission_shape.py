@@ -108,7 +108,7 @@ class SubmissionShapeEngine(unittest.TestCase):
                 requests = []
                 def response(request, timeout):
                     payload = load_json(request.data)
-                    self.assertIs(payload['enable_thinking'], False)
+                    self.assertEqual(payload['reasoning_effort'], 'max')
                     index = len(requests)
                     requests.append(payload)
                     if index < len(actions):
@@ -119,13 +119,13 @@ class SubmissionShapeEngine(unittest.TestCase):
                         delta = {'role': 'assistant', 'content': 'Review submitted.'}
                     choices = [{'index': 0, 'delta': delta, 'finish_reason': None},
                                {'index': 0, 'delta': {}, 'finish_reason': 'stop'}]
-                    chunks = ['data: ' + json.dumps({'model': 'qwen3.8-flash', 'choices': [choice]})
+                    chunks = ['data: ' + json.dumps({'model': 'glm-5.3-flash', 'choices': [choice]})
                               + '\n\n' for choice in choices]
                     return Stream((''.join(chunks) + 'data: [DONE]\n\n').encode())
                 with patch('ryt.bridge.open_provider', side_effect=response):
                     result, evidence = execute_agent(Path(os.environ['RYT_OPENCODE_BIN']), data,
                         session, 'SYNTHETIC-CREDENTIAL', lambda text: len(text) // 4,
-                        timeout_seconds=30, profile_id='bai-qwen', max_calls=10, max_tools=8)
+                        timeout_seconds=30, profile_id='zai', max_calls=10, max_tools=8)
                 self.assertEqual(result['review'], corrected['review'])
                 submissions = [e for e in evidence['tool_events'] if e['tool'] == 'submit_review']
                 self.assertEqual([e['status'] for e in submissions], ['failed', 'failed', 'success'])

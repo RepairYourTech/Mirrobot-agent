@@ -90,7 +90,7 @@ def agent_config(url, token, profile_id='zai', max_tools=384, max_calls=64):
             'options': {'baseURL': url, 'apiKey': token, 'timeout': 600000, 'maxRetries': 0},
             'models': {selected.model: {'name': selected.model, 'tool_call': True,
                 'limit': {'context': LOCK['context_tokens'], 'output': LOCK['output_tokens']},
-                'options': {'reasoningEffort': 'max'} if selected.thinking_enabled else {}}}}},
+                'options': {'reasoningEffort': selected.reasoning_effort}}}}},
         'permission': {'*': 'deny', 'ryt_*': 'allow'},
         'agent': {'ryt-review': {'mode': 'primary', 'description': 'Read-only adversarial reviewer',
                      'prompt': '{file:/work/system.txt}', 'steps': max_calls,

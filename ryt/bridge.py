@@ -13,6 +13,7 @@ from ryt.common import load_json, sha256, write_json
 from ryt.diagnostics import BridgeFailure, safe_failure
 from ryt.planning import INITIAL_INPUT_LIMIT
 from ryt.providers import profile
+from ryt.upstream import open_with_retry
 from pathlib import Path
 
 ENDPOINT = 'https://api.z.ai/api/coding/paas/v4/chat/completions'
@@ -46,7 +47,6 @@ class ProviderBridge:
         self.max_calls = max_calls
         self.finalizing = False
         self.submission_path = submission_path
-        self._response_states = {}
         self.key = api_key
         self.token = secrets.token_hex(32)
         self.count_tokens = count_tokens
@@ -55,6 +55,7 @@ class ProviderBridge:
         self.prefill_nonce = secrets.token_hex(16)
         self.receipt_path = None
         self.failed = threading.Event()
+        self.closing = threading.Event()
         self.lock = threading.Lock()
         self._socket_temp = None
         if socket_path is None:
@@ -86,7 +87,7 @@ class ProviderBridge:
                     record = bridge.validate(payload)
                     request = urllib.request.Request(bridge.profile.endpoint, data=json.dumps(payload).encode(),
                         headers={'Authorization': 'Bearer ' + bridge.key, 'Content-Type': 'application/json'})
-                    with open_provider(request, timeout=600) as response:
+                    with bridge.open_upstream(request, record) as response:
                         self.send_response(200)
                         self.send_header('Content-Type', response.headers.get('Content-Type', 'text/event-stream'))
                         self.send_header('Cache-Control', 'no-cache')
@@ -122,6 +123,13 @@ class ProviderBridge:
             os.close(directory_fd)
         os.chmod(self.socket_path, 0o600)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    def wait(self, seconds):
+        """Back off before resending; True means the bridge is closing and the retry is abandoned."""
+        return self.closing.wait(seconds)
+
+    def open_upstream(self, request, record):
+        return open_with_retry(lambda: open_provider(request, timeout=600), record, self.wait)
 
     @staticmethod
     def receipts(messages):
@@ -212,14 +220,8 @@ class ProviderBridge:
         requested = payload.pop('max_completion_tokens', payload.get('max_tokens', OUTPUT_TOKENS))
         if type(requested) is not int or requested < 1:
             raise BridgeFailure('output_limit')
-        if self.profile.thinking_enabled:
-            payload['reasoning_effort'] = self.profile.reasoning_effort
-            payload.pop('enable_thinking', None)
-        else:
-            payload.pop('reasoning_effort', None)
-            payload.pop('reasoning', None)
-            payload.pop('thinking', None)
-            payload['enable_thinking'] = False
+        payload['reasoning_effort'] = self.profile.reasoning_effort
+        payload.pop('enable_thinking', None)
         payload['max_tokens'] = min(requested, OUTPUT_TOKENS)
         payload['stream_options'] = {'include_usage': True}
         # A transient trusted budget notice is never a replacement for history.
@@ -259,24 +261,6 @@ class ProviderBridge:
             self.records.append(record)
         return record
 
-    def observe_availability(self, record, delta, reason):
-        if self.profile.provider != 'bai':
-            return
-        state = self._response_states.setdefault(id(record), {'text': '', 'tools': False})
-        state['tools'] = state['tools'] or bool(delta.get('tool_calls'))
-        content = delta.get('content')
-        if isinstance(content, str) and state['text'] is not None:
-            combined = state['text'] + content
-            state['text'] = combined if len(combined) <= 512 else None
-        if not reason or state['tools'] or state['text'] is None:
-            return
-        try:
-            envelope = load_json(state['text'])
-        except (ValueError, TypeError):
-            return
-        if envelope == {'message': 'Too many tokens, please wait before trying again.'}:
-            raise BridgeFailure('provider_token_rate_limit')
-
     def observe(self, record, line):
         if not line.startswith(b'data:'):
             return
@@ -298,15 +282,8 @@ class ProviderBridge:
             record['reported_models'].append(model)
         if data.get('usage'):
             record['usage'] = data['usage']
-            reasoning = (data['usage'].get('completion_tokens_details') or {}).get('reasoning_tokens', 0)
-            if not self.profile.thinking_enabled and reasoning:
-                raise BridgeFailure('unexpected_thinking')
         for choice in data.get('choices', []):
-            delta = choice.get('delta') or {}
-            if not self.profile.thinking_enabled and (delta.get('reasoning_content') or delta.get('reasoning')):
-                raise BridgeFailure('unexpected_thinking')
             reason = choice.get('finish_reason')
-            self.observe_availability(record, delta, reason)
             if reason:
                 record['finish_reasons'].append(reason)
                 if reason not in ('stop', 'tool_calls'):
@@ -318,11 +295,11 @@ class ProviderBridge:
         return self
 
     def __exit__(self, *_):
+        self.closing.set()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=2)
         self.key = ''
-        self._response_states.clear()
         try:
             self.socket_path.unlink(missing_ok=True)
         finally:
