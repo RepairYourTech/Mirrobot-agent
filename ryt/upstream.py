@@ -9,6 +9,7 @@ import json
 import math
 import random
 import re
+import threading
 import time
 import urllib.error
 
@@ -19,6 +20,7 @@ MAX_DELAY = 60.0           # ceiling for a computed backoff
 MAX_RETRY_AFTER = 120.0    # ceiling for a provider-supplied Retry-After
 MAX_TOTAL_WAIT = 240.0     # one request never waits longer than this across all retries
 ERROR_BODY_LIMIT = 8192
+ERROR_BODY_SECONDS = 5.0  # the body is optional diagnostics; the status alone decides retry and failure
 FIELD = re.compile(r'[A-Za-z0-9_.:\[\]-]{1,64}')
 FIELDS = ('code', 'param', 'type')
 
@@ -43,17 +45,41 @@ def retry_after(headers):
     return min(seconds, MAX_RETRY_AFTER)
 
 
+def read_bounded(error):
+    """At most ERROR_BODY_LIMIT + 1 bytes within ERROR_BODY_SECONDS, else nothing.
+
+    A provider can send the status and then stall the body; the socket timeout bounds each read,
+    not the whole read, so the read runs on a daemon thread that is abandoned (and its stream
+    closed) when the time is up.
+    """
+    result = []
+
+    def read():
+        try:
+            result.append(error.read(ERROR_BODY_LIMIT + 1))
+        except Exception:
+            pass
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    reader.join(ERROR_BODY_SECONDS)
+    if reader.is_alive():
+        try:
+            error.close()
+        except Exception:
+            pass
+        return b''
+    return result[0] if result else b''
+
+
 def provider_error(error):
     """Typed fields of an OpenAI-compatible error body, never its message."""
-    try:
-        raw = error.read(ERROR_BODY_LIMIT + 1)
-    except Exception:
-        return {}
+    raw = read_bounded(error)
     if not raw or len(raw) > ERROR_BODY_LIMIT:
         return {}
     try:
         data = json.loads(raw)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         return {}
     if not isinstance(data, dict):
         return {}
