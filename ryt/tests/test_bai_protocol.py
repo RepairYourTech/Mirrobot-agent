@@ -178,7 +178,8 @@ class BaiTerminalCompatibility(unittest.TestCase):
             self.assertEqual(evidence['route'], 'bai-02')
             self.assertEqual(evidence['attempts'][0]['failure_code'], 'provider_token_rate_limit')
             self.assertEqual(evidence['pool_request_count'], 4)
-            self.assertEqual(pool.next().alias, 'bai-02')
+            # A token rate limit rotates only this chunk; the next chunk offers bai-01 again (issue 2710).
+            self.assertEqual(pool.next().alias, 'bai-01')
             self.assertNotIn('LIMITED', json.dumps(evidence))
 
     def test_stop_with_tool_calls_still_executes_and_delivers_the_tool_results(self):
