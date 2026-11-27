@@ -11,11 +11,13 @@ def execute_with_pool(execute, binary, data, root, pool, count_tokens, policy, t
     attempts = []
     used_calls = 0
     used_tools = 0
+    tried = set()
     for index in range(len(pool.routes)):
         remaining = int(deadline - time.monotonic())
         if remaining < 30 or used_calls >= 64 or used_tools >= 384:
             raise ValueError('inference failover budget exhausted')
-        route = pool.next()
+        route = pool.next(exclude=tried)
+        tried.add(route.alias)
         session = root / f'attempt-{index + 1}'
         session.mkdir(mode=0o700)
         attempt_started = time.monotonic()

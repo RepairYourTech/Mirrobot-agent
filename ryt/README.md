@@ -121,9 +121,25 @@ The host reads `OPENAI_KEY` (GLM primary), followed by `PR_REVIEW_BAI_01`,
 `PR_REVIEW_BAI_02`, and `PR_REVIEW_BAI_03`. Empty credentials are skipped and
 duplicate values are used once. Route aliases, never credentials, appear in evidence.
 One key is sufficient for b.ai; the other slots are reserves. Only HTTP 429,
-500/502/503/504 and transport timeouts/errors advance the pool. A failed route is
-retired for the current review, including subsequent chunks. Authentication,
+500/502/503/504 and transport timeouts/errors advance the pool. Authentication,
 coverage, model identity, truncation and other assurance failures fail closed.
+
+Before any of those reach the pool, the bridge resends the same request on the same
+route when the provider refuses it with HTTP 429 or 500/502/503/504 (`ryt/upstream.py`).
+A refusal arrives before any byte reaches OpenCode, so the engine never sees a partial
+stream and the retry does not count as another provider request. At most six attempts
+are made per request; the wait honours `Retry-After` (capped at 120 s) and otherwise
+backs off 4, 8, 16, 32 and 60 s with jitter; one request never waits more than 240 s
+in total, and closing the bridge abandons a pending wait. Each retry and the final
+refusal are recorded on the request as the HTTP status plus the provider's typed
+`code`, `param` and `type` fields (charset-checked, at most 64 characters), never
+its message text.
+
+When the bridge gives up, a rate limit (`HTTP_429` or `provider_token_rate_limit`)
+rotates to the next route for the current chunk only: the next chunk starts on the
+preferred route again, because a busy provider is not an outage. Any other
+availability failure retires the route for the rest of the review. A route is never
+attempted twice within one chunk.
 
 Each attempt starts fresh OpenCode state with the same complete input and trusted
 policy. The original session time, 64 provider requests and 384 tool calls are
@@ -140,8 +156,8 @@ capacity. Additional providers require explicit fixed profiles and verification.
 b.ai sometimes emits its token-rate-limit error as an HTTP 200 assistant message.
 Only the observed exact JSON envelope is recognized as `provider_token_rate_limit`;
 ordinary model text and tool calls are not reclassified. Its text is held only in
-a bounded transient buffer, never copied into evidence. The closed code retires
-the key and advances to the next approved route. Once a bridge fails it rejects
+a bounded transient buffer, never copied into evidence. The closed code advances
+to the next approved route for the current chunk. Once a bridge fails it rejects
 SDK retries before any further upstream requests and preserves the first failure.
 
 Both GLM and Qwen enter a finalization phase when at most 32K plus 1K safety of input capacity,

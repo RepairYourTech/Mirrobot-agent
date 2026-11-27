@@ -65,7 +65,8 @@ class FailoverExecution(unittest.TestCase):
         self.assertEqual(telemetry['route'], 'bai-01')
         self.assertEqual([a['status'] for a in telemetry['attempts']], ['failed', 'complete'])
         self.assertNotIn('arbitrary', json.dumps(telemetry))
-        self.assertEqual(pool.next().alias, 'bai-01')
+        # A rate limit is not an outage: the next chunk starts on GLM again (issue 2710).
+        self.assertEqual(pool.next().alias, 'zai-01')
         self.assertEqual(telemetry['pool_tool_count'], 2)
 
     def test_assurance_failure_is_not_hidden_by_trying_another_model(self):

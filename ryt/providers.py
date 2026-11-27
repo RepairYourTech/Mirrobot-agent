@@ -17,6 +17,7 @@ PROFILES = {
 }
 RETRYABLE = frozenset({'HTTP_429', 'HTTP_500', 'HTTP_502', 'HTTP_503', 'HTTP_504',
                        'TimeoutError', 'ConnectionError', 'transport_URLError', 'provider_token_rate_limit'})
+RATE_LIMITED = frozenset({'HTTP_429', 'provider_token_rate_limit'})
 
 
 def profile(name):
@@ -50,24 +51,30 @@ def routes(environment):
 
 
 class ProviderPool:
-    """A failing route is retired for this review, never retried for every chunk."""
+    """Rotate away from a failing route.
+
+    A rate limit (the bridge has already backed off and resent on that route) rotates only for
+    the current chunk: the next chunk starts on the preferred route again, because a busy
+    provider is not an outage. Any other availability failure retires the route for this review,
+    so a dead route is never paid for on every chunk.
+    """
     def __init__(self, configured):
         self.routes = tuple(configured)
         self.failures = []
         self.disabled = set()
 
-    def next(self):
+    def next(self, exclude=frozenset()):
         for route in self.routes:
-            if route.alias not in self.disabled:
+            if route.alias not in self.disabled and route.alias not in exclude:
                 return route
         raise ValueError('all configured inference routes unavailable')
 
     def fail(self, route, code):
         if route not in self.routes or code not in RETRYABLE:
             return False
-        if route.alias not in self.disabled:
+        self.failures.append({'route': route.alias, 'failure_code': code})
+        if code not in RATE_LIMITED:
             self.disabled.add(route.alias)
-            self.failures.append({'route': route.alias, 'failure_code': code})
         return True
 
     def audit(self):

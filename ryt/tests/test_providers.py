@@ -117,7 +117,7 @@ class ProviderContracts(unittest.TestCase):
         pool = ProviderPool(configured)
         first = pool.next()
         self.assertEqual(first.alias, 'zai-01')
-        self.assertTrue(pool.fail(first, 'HTTP_429'))
+        self.assertTrue(pool.fail(first, 'HTTP_502'))
         second = pool.next()
         self.assertEqual(second.alias, 'bai-01')
         self.assertTrue(pool.fail(second, 'HTTP_503'))
@@ -126,18 +126,18 @@ class ProviderContracts(unittest.TestCase):
         self.assertFalse(pool.fail(third, 'reported_model'))
         self.assertFalse(pool.fail(third, 'finish_length'))
         self.assertFalse(pool.fail(third, 'HTTP_401'))
-        self.assertTrue(pool.fail(third, 'HTTP_429'))
+        self.assertTrue(pool.fail(third, 'HTTP_504'))
         with self.assertRaises(ValueError):
             pool.next()
 
     def test_successful_route_stays_preferred_and_no_key_material_enters_audit(self):
         configured = routes({'OPENAI_KEY': 'secret-glm', 'PR_REVIEW_BAI_01': 'secret-bai'})
         pool = ProviderPool(configured)
-        pool.fail(pool.next(), 'HTTP_429')
+        pool.fail(pool.next(), 'HTTP_503')
         self.assertEqual(pool.next().alias, 'bai-01')
         self.assertEqual(pool.next().alias, 'bai-01')
         self.assertNotIn('secret-', json.dumps(pool.audit()))
-        self.assertEqual(pool.audit(), [{'route': 'zai-01', 'failure_code': 'HTTP_429'}])
+        self.assertEqual(pool.audit(), [{'route': 'zai-01', 'failure_code': 'HTTP_503'}])
 
 
 if __name__ == '__main__':

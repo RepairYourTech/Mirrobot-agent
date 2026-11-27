@@ -13,6 +13,7 @@ from ryt.common import load_json, sha256, write_json
 from ryt.diagnostics import BridgeFailure, safe_failure
 from ryt.planning import INITIAL_INPUT_LIMIT
 from ryt.providers import profile
+from ryt.upstream import open_with_retry
 from pathlib import Path
 
 ENDPOINT = 'https://api.z.ai/api/coding/paas/v4/chat/completions'
@@ -55,6 +56,7 @@ class ProviderBridge:
         self.prefill_nonce = secrets.token_hex(16)
         self.receipt_path = None
         self.failed = threading.Event()
+        self.closing = threading.Event()
         self.lock = threading.Lock()
         self._socket_temp = None
         if socket_path is None:
@@ -86,7 +88,7 @@ class ProviderBridge:
                     record = bridge.validate(payload)
                     request = urllib.request.Request(bridge.profile.endpoint, data=json.dumps(payload).encode(),
                         headers={'Authorization': 'Bearer ' + bridge.key, 'Content-Type': 'application/json'})
-                    with open_provider(request, timeout=600) as response:
+                    with bridge.open_upstream(request, record) as response:
                         self.send_response(200)
                         self.send_header('Content-Type', response.headers.get('Content-Type', 'text/event-stream'))
                         self.send_header('Cache-Control', 'no-cache')
@@ -122,6 +124,13 @@ class ProviderBridge:
             os.close(directory_fd)
         os.chmod(self.socket_path, 0o600)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    def wait(self, seconds):
+        """Back off before resending; True means the bridge is closing and the retry is abandoned."""
+        return self.closing.wait(seconds)
+
+    def open_upstream(self, request, record):
+        return open_with_retry(lambda: open_provider(request, timeout=600), record, self.wait)
 
     @staticmethod
     def receipts(messages):
@@ -318,6 +327,7 @@ class ProviderBridge:
         return self
 
     def __exit__(self, *_):
+        self.closing.set()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=2)
