@@ -109,10 +109,10 @@ class SameRouteRetry(unittest.TestCase):
             self.assertEqual(len(attempts), upstream.MAX_ATTEMPTS)
             self.assertEqual(len(bridge.records), 1)
             self.assertEqual(bridge.records[0]['upstream_errors'], [{'status': 429, 'code': '1302'}])
-        with ProviderBridge('synthetic', lambda text: 100, profile_id='bai-qwen') as bridge, \
+        with ProviderBridge('synthetic', lambda text: 100) as bridge, \
                 patch('ryt.bridge.open_provider', side_effect=scripted([refusal(400, body)])), \
                 patch.object(bridge, 'wait', return_value=False):
-            connection_body = json.dumps({'model': 'qwen3.8-flash', 'stream': True, 'messages': []})
+            connection_body = json.dumps({'model': 'glm-5.3-flash', 'stream': True, 'messages': []})
             connection = UnixHTTPConnection(bridge.socket_path)
             connection.request('POST', '/v1/chat/completions', body=connection_body,
                                headers={'Authorization': 'Bearer ' + bridge.token})
@@ -144,23 +144,20 @@ class SameRouteRetry(unittest.TestCase):
 
 
 class PerChunkRotation(unittest.TestCase):
-    def test_rate_limit_rotates_for_one_chunk_and_never_retires_the_primary_route(self):
-        pool = ProviderPool(routes({'OPENAI_KEY': 'glm', 'PR_REVIEW_BAI_01': 'bai1'}))
+    def test_rate_limit_skips_only_the_current_chunk_but_an_outage_retires_glm(self):
+        pool = ProviderPool(routes({'OPENAI_KEY': 'glm'}))
         first = pool.next()
         self.assertEqual(first.alias, 'zai-01')
         self.assertTrue(pool.fail(first, 'HTTP_429'))
-        self.assertEqual(pool.next(exclude={'zai-01'}).alias, 'bai-01')
+        with self.assertRaises(ValueError):
+            pool.next(exclude={'zai-01'})
         # The next chunk starts on GLM again: a rate limit is not an outage.
         self.assertEqual(pool.next().alias, 'zai-01')
-        self.assertTrue(pool.fail(first, 'provider_token_rate_limit'))
-        self.assertEqual(pool.next().alias, 'zai-01')
         self.assertTrue(pool.fail(first, 'HTTP_503'))
-        self.assertEqual(pool.next().alias, 'bai-01')
-        self.assertEqual(pool.audit(), [{'route': 'zai-01', 'failure_code': 'HTTP_429'},
-            {'route': 'zai-01', 'failure_code': 'provider_token_rate_limit'},
-            {'route': 'zai-01', 'failure_code': 'HTTP_503'}])
         with self.assertRaises(ValueError):
-            pool.next(exclude={'bai-01'})
+            pool.next()
+        self.assertEqual(pool.audit(), [{'route': 'zai-01', 'failure_code': 'HTTP_429'},
+            {'route': 'zai-01', 'failure_code': 'HTTP_503'}])
 
     def test_one_chunk_never_repeats_a_route_the_bridge_already_retried(self):
         pool = ProviderPool(routes({'OPENAI_KEY': 'glm'}))

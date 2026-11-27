@@ -13,11 +13,10 @@ class Profile:
 
 PROFILES = {
     'zai': Profile('zai', 'glm-5.3-flash', 'https://api.z.ai/api/coding/paas/v4/chat/completions', 'max', True),
-    'bai-qwen': Profile('bai', 'qwen3.8-flash', 'https://api.b.ai/v1/chat/completions', 'none', False),
 }
 RETRYABLE = frozenset({'HTTP_429', 'HTTP_500', 'HTTP_502', 'HTTP_503', 'HTTP_504',
-                       'TimeoutError', 'ConnectionError', 'transport_URLError', 'provider_token_rate_limit'})
-RATE_LIMITED = frozenset({'HTTP_429', 'provider_token_rate_limit'})
+                       'TimeoutError', 'ConnectionError', 'transport_URLError'})
+RATE_LIMITED = frozenset({'HTTP_429'})
 
 
 def profile(name):
@@ -34,8 +33,7 @@ class Route:
 
 
 def routes(environment):
-    names = [('OPENAI_KEY', 'zai-01', 'zai')] + [
-        (f'PR_REVIEW_BAI_{index:02d}', f'bai-{index:02d}', 'bai-qwen') for index in range(1, 4)]
+    names = [('OPENAI_KEY', 'zai-01', 'zai')]
     result = []
     seen = set()
     for variable, alias, selected in names:

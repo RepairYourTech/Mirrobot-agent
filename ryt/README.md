@@ -11,8 +11,8 @@ RYT's existing trusted dispatcher and dedicated review pool call `ReviewBackend`
 It provides complete diff chunks, immutable exact-head/base snapshots, and previous
 bot findings to OpenCode. The bounded diff packet is verified in the actual initial model request; revisited
 pages carry independent delivery receipts. The model must submit structured file
-analysis/findings through the MCP interface. The primary is GLM-5.3-Flash/max;
-the approved availability fallback is b.ai Qwen3.8-Flash with thinking disabled.
+analysis/findings through the MCP interface. The only approved model is
+GLM-5.3-Flash/max; the b.ai Qwen fallback was removed (RepairYourTech#2710).
 The existing PR-Agent library is retained ONLY as the proven GitHub diff/formatting/
 inline-publication adapter, not as the mandatory review's inference engine.
 
@@ -24,7 +24,7 @@ no host home, read-only repository files and bounded CPU/time/files/output. The
 OpenCode engine itself also has a private Bubblewrap network namespace: it has no
 host or Internet route. A trusted relay on sandbox-local loopback forwards only to
 a mode-0600 Unix-domain socket owned by the host provider bridge; that bridge can
-call only its selected profile's fixed Z.AI or b.ai endpoint, rejects redirects,
+call only the fixed Z.AI endpoint, rejects redirects,
 and retains the real API key outside the agent.
 OpenCode permission rules are defense-in-depth, not the egress boundary. No public
 session sharing, external plugins, model-controlled routing, input compaction, system
@@ -84,7 +84,7 @@ tool receipt. Prior finding count/body limits remain explicitly disclosed.
 The provider output allowance is 32K, within the documented Flash128K maximum;
 input+output remains within RYT128K policy. The previous16K cap could terminate
 long maximum-reasoning responses. Truncation still fails; no partial response is
-accepted. GLM keeps maximum reasoning; Qwen explicitly disables thinking. Typed
+accepted. GLM keeps maximum reasoning. Typed
 stream-failure codes and final metadata distinguish limits from transport failures.
 The fallback wrapper preserves those codes for non-retryable failures too, alongside
 tool validation records. Engine completion and receipt validation failures receive
@@ -117,12 +117,12 @@ oversized request rather than fabricating a completed review.
 
 ## Inference availability pool
 
-The host reads `OPENAI_KEY` (GLM primary), followed by `PR_REVIEW_BAI_01`,
-`PR_REVIEW_BAI_02`, and `PR_REVIEW_BAI_03`. Empty credentials are skipped and
-duplicate values are used once. Route aliases, never credentials, appear in evidence.
-One key is sufficient for b.ai; the other slots are reserves. Only HTTP 429,
-500/502/503/504 and transport timeouts/errors advance the pool. Authentication,
-coverage, model identity, truncation and other assurance failures fail closed.
+The host reads only `OPENAI_KEY` (route `zai-01`). Other provider variables,
+including the retired `PR_REVIEW_BAI_*` slots, are ignored. Route aliases, never
+credentials, appear in evidence. The pool stays generic, but only HTTP 429,
+500/502/503/504 and transport timeouts/errors are availability failures.
+Authentication, coverage, model identity, truncation and other assurance failures
+fail closed.
 
 Before any of those reach the pool, the bridge resends the same request on the same
 route when the provider refuses it with HTTP 429 or 500/502/503/504 (`ryt/upstream.py`).
@@ -135,36 +135,29 @@ refusal are recorded on the request as the HTTP status plus the provider's typed
 `code`, `param` and `type` fields (charset-checked, at most 64 characters), never
 its message text.
 
-When the bridge gives up, a rate limit (`HTTP_429` or `provider_token_rate_limit`)
-rotates to the next route for the current chunk only: the next chunk starts on the
-preferred route again, because a busy provider is not an outage. Any other
-availability failure retires the route for the rest of the review. A route is never
-attempted twice within one chunk.
+When the bridge gives up on a rate limit (`HTTP_429`), only the current chunk
+fails: the next chunk starts on GLM again, because a busy provider is not an
+outage. Any other availability failure retires the route for the rest of the
+review. A route is never attempted twice within one chunk.
 
 Each attempt starts fresh OpenCode state with the same complete input and trusted
 policy. The original session time, 64 provider requests and 384 tool calls are
 shared across attempts. The completed session records actual provider/model,
-thinking mode, safe route aliases and bounded attempt accounting. Qwen requests
-force `enable_thinking: false`; observed reasoning content or nonzero reasoning
-token usage is rejected. Provider-internal behavior beyond observable output is
-not independently measurable.
+reasoning mode, safe route aliases and bounded attempt accounting.
+Provider-internal behavior beyond observable output is not independently measurable.
 
 This pool is local to one review. It does not claim independent quotas for keys
 on one account, coordinate quota cooldown across runners, or prove sustained free
 capacity. Additional providers require explicit fixed profiles and verification.
 
-b.ai sometimes emits its token-rate-limit error as an HTTP 200 assistant message.
-Only the observed exact JSON envelope is recognized as `provider_token_rate_limit`;
-ordinary model text and tool calls are not reclassified. Its text is held only in
-a bounded transient buffer, never copied into evidence. The closed code advances
-to the next approved route for the current chunk. Once a bridge fails it rejects
-SDK retries before any further upstream requests and preserves the first failure.
+Once a bridge fails it rejects SDK retries before any further upstream requests
+and preserves the first failure.
 
-Both GLM and Qwen enter a finalization phase when at most 32K plus 1K safety of input capacity,
+GLM enters a finalization phase when at most 32K plus 1K safety of input capacity,
 or eight provider requests, remain. The provider then receives only the structured
 submission tool with explicit function choice; every original message and complete
 diff stays in the input. Merely hiding inspection schemas does not reliably stop
-Qwen from calling remembered tools. After the trusted MCP server accepts the
+a model from calling remembered tools. After the trusted MCP server accepts the
 structured result, tool choice becomes `none` so the model can acknowledge its
 receipt without submitting again. No model text can substitute for that acceptance.
 The agent receives the remaining call allocation, and its step budget matches the

@@ -1,4 +1,4 @@
-"""Real pinned engine regression for B.AI's tool-call terminal convention."""
+"""Real pinned engine regressions for tool-call terminal conventions under the GLM profile."""
 import json
 import os
 from pathlib import Path
@@ -15,9 +15,9 @@ from test_opencode import Stream
 
 
 @unittest.skipUnless(os.environ.get('RYT_OPENCODE_BIN'), 'explicit pinned binary required')
-class BaiTerminalCompatibility(unittest.TestCase):
+class EngineTerminalCompatibility(unittest.TestCase):
     def test_rejected_unknown_tool_can_be_corrected_without_losing_completed_review(self):
-        with tempfile.TemporaryDirectory(prefix='ryt-bai-unknown-tool-') as temp:
+        with tempfile.TemporaryDirectory(prefix='ryt-engine-unknown-tool-') as temp:
             root = Path(temp)
             data = fixture(root)
             session = root / 'session'
@@ -36,13 +36,13 @@ class BaiTerminalCompatibility(unittest.TestCase):
                 else:
                     delta = {'role': 'assistant', 'content': 'Review submitted.'}
                     finish = 'stop'
-                return Stream(('data: ' + json.dumps({'model': 'qwen3.8-flash', 'choices': [{
+                return Stream(('data: ' + json.dumps({'model': 'glm-5.3-flash', 'choices': [{
                     'index': 0, 'delta': delta, 'finish_reason': finish}]}) + '\n\ndata: [DONE]\n\n').encode())
             with patch('ryt.bridge.open_provider', side_effect=response):
                 try:
                     result, evidence = execute_agent(Path(os.environ['RYT_OPENCODE_BIN']), data, session,
                         'SYNTHETIC-CREDENTIAL', lambda text: len(text) // 4, timeout_seconds=30,
-                        profile_id='bai-qwen')
+                        profile_id='zai')
                 finally:
                     events = [load_json(line) for line in (session / 'events.jsonl').read_text().splitlines()
                               if line.startswith('{')]
@@ -62,19 +62,19 @@ class BaiTerminalCompatibility(unittest.TestCase):
             self.assertIn('unavailable tool', json.dumps(requests[1]['messages']))
 
     def test_chat_only_completion_retains_missing_submission_diagnostic(self):
-        with tempfile.TemporaryDirectory(prefix='ryt-bai-missing-submit-') as temp:
+        with tempfile.TemporaryDirectory(prefix='ryt-engine-missing-submit-') as temp:
             root = Path(temp)
             data = fixture(root)
             session = root / 'session'
             session.mkdir()
             def response(request, timeout):
-                return Stream(('data: ' + json.dumps({'model': 'qwen3.8-flash', 'choices': [{
+                return Stream(('data: ' + json.dumps({'model': 'glm-5.3-flash', 'choices': [{
                     'index': 0, 'delta': {'role': 'assistant', 'content': 'No tool submission.'},
                     'finish_reason': 'stop'}]}) + '\n\ndata: [DONE]\n\n').encode())
             with patch('ryt.bridge.open_provider', side_effect=response), self.assertRaises(ValueError):
                 execute_agent(Path(os.environ['RYT_OPENCODE_BIN']), data, session,
                     'SYNTHETIC-CREDENTIAL', lambda text: len(text) // 4, timeout_seconds=30,
-                    profile_id='bai-qwen')
+                    profile_id='zai')
             progress = load_json((session / 'progress.json').read_text())
             self.assertEqual(progress['failure_code'], 'missing_submission')
             self.assertEqual(progress['provider_requests'][-1]['finish_reasons'], ['stop'])
@@ -83,7 +83,7 @@ class BaiTerminalCompatibility(unittest.TestCase):
 
     def test_rejected_findings_survive_real_engine_finalization(self):
         import copy
-        with tempfile.TemporaryDirectory(prefix='ryt-bai-submission-') as temp:
+        with tempfile.TemporaryDirectory(prefix='ryt-engine-submission-') as temp:
             root = Path(temp)
             data = fixture(root)
             session = root / 'session'
@@ -112,7 +112,7 @@ class BaiTerminalCompatibility(unittest.TestCase):
 
             def response(request, timeout):
                 payload = load_json(request.data)
-                self.assertIs(payload['enable_thinking'], False)
+                self.assertEqual(payload['reasoning_effort'], 'max')
                 index = len(requests)
                 requests.append(payload)
                 if index < len(actions):
@@ -121,7 +121,7 @@ class BaiTerminalCompatibility(unittest.TestCase):
                         'type': 'function', 'function': {'name': name, 'arguments': json.dumps(arguments)}}]}
                 else:
                     delta = {'role': 'assistant', 'content': 'Review submitted.'}
-                chunks = [json.dumps({'model': 'qwen3.8-flash', 'choices': [choice]}) for choice in
+                chunks = [json.dumps({'model': 'glm-5.3-flash', 'choices': [choice]}) for choice in
                     [{'index': 0, 'delta': delta, 'finish_reason': None},
                      {'index': 0, 'delta': {}, 'finish_reason': 'stop'}]]
                 return Stream((''.join('data: ' + chunk + '\n\n' for chunk in chunks)
@@ -130,7 +130,7 @@ class BaiTerminalCompatibility(unittest.TestCase):
             with patch('ryt.bridge.open_provider', side_effect=response):
                 result, evidence = execute_agent(Path(os.environ['RYT_OPENCODE_BIN']), data, session,
                     'SYNTHETIC-CREDENTIAL', lambda text: len(text) // 4, timeout_seconds=30,
-                    profile_id='bai-qwen', max_tools=8, max_calls=10)
+                    profile_id='zai', max_tools=8, max_calls=10)
             self.assertEqual(result['review']['key_issues_to_review'], corrected['review']['key_issues_to_review'])
             submissions = [event for event in evidence['tool_events'] if event['tool'] == 'submit_review']
             self.assertEqual([event['status'] for event in submissions], ['failed'] * 4 + ['success'])
@@ -142,48 +142,8 @@ class BaiTerminalCompatibility(unittest.TestCase):
             self.assertIn('cannot discard rejected findings', tool_results)
             self.assertEqual(len(requests), 7)
 
-    def test_http_200_quota_response_restarts_real_engine_with_reserve_key(self):
-        from ryt.failover import execute_with_pool
-        from ryt.providers import ProviderPool, routes
-        with tempfile.TemporaryDirectory(prefix='ryt-bai-quota-') as temp:
-            root = Path(temp)
-            data = fixture(root)
-            session = root / 'session'
-            session.mkdir()
-            active_calls = []
-            actions = [('ryt_read_file', {'path': 'policy.mjs'}), ('ryt_submit_review', review())]
-            def response(request, timeout):
-                if request.get_header('Authorization') == 'Bearer LIMITED':
-                    delta = {'role': 'assistant', 'content': json.dumps(
-                        {'message': 'Too many tokens, please wait before trying again.'})}
-                else:
-                    self.assertEqual(request.get_header('Authorization'), 'Bearer AVAILABLE')
-                    index = len(active_calls)
-                    active_calls.append(load_json(request.data))
-                    if index < len(actions):
-                        name, arguments = actions[index]
-                        delta = {'role': 'assistant', 'tool_calls': [{'index': 0, 'id': f'quota-{index}',
-                            'type': 'function', 'function': {'name': name, 'arguments': json.dumps(arguments)}}]}
-                    else:
-                        delta = {'role': 'assistant', 'content': 'Review submitted.'}
-                lines = [json.dumps({'model': 'qwen3.8-flash', 'choices': [choice]}) for choice in
-                    [{'index': 0, 'delta': delta, 'finish_reason': None},
-                     {'index': 0, 'delta': {}, 'finish_reason': 'stop'}]]
-                return Stream((''.join('data: ' + line + '\n\n' for line in lines) + 'data: [DONE]\n\n').encode())
-            pool = ProviderPool(routes({'PR_REVIEW_BAI_01': 'LIMITED', 'PR_REVIEW_BAI_02': 'AVAILABLE'}))
-            with patch('ryt.bridge.open_provider', side_effect=response):
-                result, evidence = execute_with_pool(execute_agent, Path(os.environ['RYT_OPENCODE_BIN']),
-                    data, session, pool, lambda text: len(text) // 4, '', 60)
-            self.assertEqual(set(result['coverage']), {'auth.mjs'})
-            self.assertEqual(evidence['route'], 'bai-02')
-            self.assertEqual(evidence['attempts'][0]['failure_code'], 'provider_token_rate_limit')
-            self.assertEqual(evidence['pool_request_count'], 4)
-            # A token rate limit rotates only this chunk; the next chunk offers bai-01 again (issue 2710).
-            self.assertEqual(pool.next().alias, 'bai-01')
-            self.assertNotIn('LIMITED', json.dumps(evidence))
-
     def test_stop_with_tool_calls_still_executes_and_delivers_the_tool_results(self):
-        with tempfile.TemporaryDirectory(prefix='ryt-bai-protocol-') as temp:
+        with tempfile.TemporaryDirectory(prefix='ryt-engine-protocol-') as temp:
             root = Path(temp)
             data = fixture(root)
             # Dedicated GitHub runner paths exceed Linux's 108-byte socket-address limit.
@@ -194,10 +154,10 @@ class BaiTerminalCompatibility(unittest.TestCase):
 
             def response(request, timeout):
                 payload = load_json(request.data)
-                self.assertEqual(request.full_url, 'https://api.b.ai/v1/chat/completions')
-                self.assertEqual(payload['model'], 'qwen3.8-flash')
-                self.assertIs(payload['enable_thinking'], False)
-                self.assertNotIn('reasoning_effort', payload)
+                self.assertEqual(request.full_url, 'https://api.z.ai/api/coding/paas/v4/chat/completions')
+                self.assertEqual(payload['model'], 'glm-5.3-flash')
+                self.assertEqual(payload['reasoning_effort'], 'max')
+                self.assertNotIn('enable_thinking', payload)
                 requests.append(payload)
                 index = len(requests) - 1
                 if index < len(actions):
@@ -215,14 +175,14 @@ class BaiTerminalCompatibility(unittest.TestCase):
             with patch('ryt.bridge.open_provider', side_effect=response):
                 result, evidence = execute_agent(Path(os.environ['RYT_OPENCODE_BIN']), data, session,
                     'SYNTHETIC-CREDENTIAL', lambda text: len(text) // 4, timeout_seconds=30,
-                    profile_id='bai-qwen', max_tools=4, max_calls=10)
+                    profile_id='zai', max_tools=4, max_calls=10)
             self.assertEqual(len(requests), 3)
             self.assertEqual([event['tool'] for event in evidence['tool_events']], ['read_file', 'submit_review'])
             self.assertEqual(set(result['coverage']), {'auth.mjs'})
             self.assertTrue(all(request['finish_reasons'] == ['stop'] for request in evidence['provider_requests']))
             self.assertTrue(any(message['role'] == 'tool' for message in requests[-1]['messages']))
-            self.assertEqual(evidence['model'], 'openai/qwen3.8-flash')
-            self.assertIs(evidence['thinking_enabled'], False)
+            self.assertEqual(evidence['model'], 'openai/glm-5.3-flash')
+            self.assertIs(evidence['thinking_enabled'], True)
             self.assertIn('ryt_read_file', [tool['function']['name'] for tool in requests[0]['tools']])
             self.assertEqual([tool['function']['name'] for tool in requests[1]['tools']], ['ryt_submit_review'])
             self.assertEqual(requests[1]['tool_choice'],
